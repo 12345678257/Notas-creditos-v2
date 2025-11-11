@@ -662,6 +662,16 @@ def main():
     factura_data = obtener_factura()
     nota_data = obtener_nota()
 
+    # Registrar nota original una sola vez por archivo cargado
+    if nota_data:
+        current_name = st.session_state.get("nota_name")
+        original_name = st.session_state.get("nota_original_name")
+        if original_name != current_name:
+            st.session_state["nota_original_name"] = current_name
+            st.session_state["nota_original_data"] = copy.deepcopy(nota_data)
+            tmp = normalizar_documento_servicios(copy.deepcopy(nota_data))
+            st.session_state["usuarios_incompletos_original"] = validar_estructura_servicios(tmp)
+
     # Normalizar estructuras de servicios según la estructura oficial
     if factura_data:
         factura_data = normalizar_documento_servicios(factura_data)
@@ -669,6 +679,9 @@ def main():
     if nota_data:
         nota_data = normalizar_documento_servicios(nota_data)
         st.session_state["nota_data"] = nota_data
+
+    factura_data = obtener_factura()
+    nota_data = obtener_nota()
 
     # Modo de trabajo
     modo_trabajo = st.sidebar.radio(
@@ -990,9 +1003,9 @@ def main():
                 else:
                     st.success("Cambios masivos aplicados correctamente desde la plantilla.")
 
-    # ---- 7. Descarga final ----
+    # ---- 7. Descarga completa ----
     st.markdown("---")
-    st.subheader("7️⃣ Descargar JSON y XML resultantes")
+    st.subheader("7️⃣ Descargar JSON y XML de la nota completa")
 
     nota_json_bytes = json.dumps(nota_data, ensure_ascii=False, indent=2).encode("utf-8")
     nombre_nota_base = st.session_state.get("nota_name") or "nota_corregida"
@@ -1000,7 +1013,7 @@ def main():
     col_json, col_xml = st.columns(2)
     with col_json:
         st.download_button(
-            "⬇️ Descargar JSON corregido (NOTA)",
+            "⬇️ Descargar JSON corregido (NOTA completa)",
             data=nota_json_bytes,
             file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_corregida.json",
             mime="application/json",
@@ -1009,11 +1022,73 @@ def main():
     with col_xml:
         xml_bytes = nota_json_a_xml_bytes(nota_data)
         st.download_button(
-            "⬇️ Descargar XML generado desde JSON de la nota",
+            "⬇️ Descargar XML generado desde JSON de la nota (completa)",
             data=xml_bytes,
             file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}.xml",
             mime="application/xml",
         )
+
+    # ---- 8. Solo usuarios que estaban incompletos y ahora ya tienen servicios ----
+    st.markdown("---")
+    st.subheader("8️⃣ Descargar SOLO usuarios que estaban incompletos y ya están completos")
+
+    orig_incompletos = st.session_state.get("usuarios_incompletos_original", [])
+    if not orig_incompletos:
+        st.info(
+            "No se registraron usuarios incompletos en la nota original, "
+            "o la nota se cargó después de que ya estuviera corregida."
+        )
+    else:
+        usuarios_actuales = nota_data.get("usuarios", []) or []
+        indices_completos = []
+        for idx in orig_incompletos:
+            if 0 <= idx < len(usuarios_actuales):
+                u = usuarios_actuales[idx]
+                if tiene_lista_con_items(u.get("servicios")):
+                    indices_completos.append(idx)
+
+        if not indices_completos:
+            st.info(
+                "Ninguno de los usuarios que estaba incompleto en la nota original "
+                "tiene servicios completos aún."
+            )
+        else:
+            filas = []
+            for idx in indices_completos:
+                u = usuarios_actuales[idx]
+                filas.append(
+                    {
+                        "idx": idx,
+                        "tipoDocumentoIdentificacion": u.get("tipoDocumentoIdentificacion"),
+                        "numDocumentoIdentificacion": u.get("numDocumentoIdentificacion"),
+                    }
+                )
+            st.markdown("**Usuarios incluidos en la exportación filtrada:**")
+            st.dataframe(pd.DataFrame(filas), use_container_width=True, height=200)
+
+            nota_filtrada = {k: v for k, v in nota_data.items() if k != "usuarios"}
+            nota_filtrada["usuarios"] = [usuarios_actuales[i] for i in indices_completos]
+
+            json_filtrado_bytes = json.dumps(
+                nota_filtrada, ensure_ascii=False, indent=2
+            ).encode("utf-8")
+
+            col_json_f, col_xml_f = st.columns(2)
+            with col_json_f:
+                st.download_button(
+                    "⬇️ Descargar JSON (solo usuarios completados)",
+                    data=json_filtrado_bytes,
+                    file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_solo_usuarios_completados.json",
+                    mime="application/json",
+                )
+            with col_xml_f:
+                xml_filtrado_bytes = nota_json_a_xml_bytes(nota_filtrada)
+                st.download_button(
+                    "⬇️ Descargar XML (solo usuarios completados)",
+                    data=xml_filtrado_bytes,
+                    file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_solo_usuarios_completados.xml",
+                    mime="application/xml",
+                )
 
 
 if __name__ == "__main__":
