@@ -67,7 +67,7 @@ def ajustar_signo_servicios(servicios: Dict[str, Any], signo: int) -> None:
                 continue
             for campo in ("vrServicio", "valorPagoModerador"):
                 if campo in item and isinstance(item[campo], (int, float)):
-                    item[campo] = item[campo] * signo
+                    item[campo] = item[ccampo] * signo
 
 
 def normalizar_servicios_usuario(usuario: Dict[str, Any]) -> None:
@@ -662,16 +662,6 @@ def main():
     factura_data = obtener_factura()
     nota_data = obtener_nota()
 
-    # Registrar nota original una sola vez por archivo cargado
-    if nota_data:
-        current_name = st.session_state.get("nota_name")
-        original_name = st.session_state.get("nota_original_name")
-        if original_name != current_name:
-            st.session_state["nota_original_name"] = current_name
-            st.session_state["nota_original_data"] = copy.deepcopy(nota_data)
-            tmp = normalizar_documento_servicios(copy.deepcopy(nota_data))
-            st.session_state["usuarios_incompletos_original"] = validar_estructura_servicios(tmp)
-
     # Normalizar estructuras de servicios según la estructura oficial
     if factura_data:
         factura_data = normalizar_documento_servicios(factura_data)
@@ -1028,67 +1018,72 @@ def main():
             mime="application/xml",
         )
 
-    # ---- 8. Solo usuarios que estaban incompletos y ahora ya tienen servicios ----
+    # ---- 8. Exportar usuarios seleccionados con servicios completos ----
     st.markdown("---")
-    st.subheader("8️⃣ Descargar SOLO usuarios que estaban incompletos y ya están completos")
+    st.subheader("8️⃣ Exportar SOLO los usuarios seleccionados con servicios completos")
 
-    orig_incompletos = st.session_state.get("usuarios_incompletos_original", [])
-    if not orig_incompletos:
-        st.info(
-            "No se registraron usuarios incompletos en la nota original, "
-            "o la nota se cargó después de que ya estuviera corregida."
-        )
+    usuarios_actuales = nota_data.get("usuarios", []) or []
+    if not usuarios_actuales:
+        st.info("La nota no tiene usuarios para filtrar.")
     else:
-        usuarios_actuales = nota_data.get("usuarios", []) or []
-        indices_completos = []
-        for idx in orig_incompletos:
-            if 0 <= idx < len(usuarios_actuales):
-                u = usuarios_actuales[idx]
-                if tiene_lista_con_items(u.get("servicios")):
-                    indices_completos.append(idx)
+        opciones: Dict[str, int] = {}
+        for idx, u in enumerate(usuarios_actuales):
+            if tiene_lista_con_items(u.get("servicios")):
+                label = f"{idx} - {u.get('tipoDocumentoIdentificacion','')} {u.get('numDocumentoIdentificacion','')}"
+                opciones[label] = idx
 
-        if not indices_completos:
+        if not opciones:
             st.info(
-                "Ninguno de los usuarios que estaba incompleto en la nota original "
-                "tiene servicios completos aún."
+                "Ningún usuario tiene servicios completos aún. "
+                "Primero copie/edite los servicios y luego regrese a esta sección."
             )
         else:
-            filas = []
-            for idx in indices_completos:
-                u = usuarios_actuales[idx]
-                filas.append(
-                    {
-                        "idx": idx,
-                        "tipoDocumentoIdentificacion": u.get("tipoDocumentoIdentificacion"),
-                        "numDocumentoIdentificacion": u.get("numDocumentoIdentificacion"),
-                    }
-                )
-            st.markdown("**Usuarios incluidos en la exportación filtrada:**")
-            st.dataframe(pd.DataFrame(filas), use_container_width=True, height=200)
+            seleccion = st.multiselect(
+                "Seleccione los usuarios a los que aplicará la nota crédito (solo usuarios con servicios):",
+                list(opciones.keys()),
+            )
 
-            nota_filtrada = {k: v for k, v in nota_data.items() if k != "usuarios"}
-            nota_filtrada["usuarios"] = [usuarios_actuales[i] for i in indices_completos]
+            if not seleccion:
+                st.info("Seleccione al menos un usuario para generar JSON/XML filtrados.")
+            else:
+                indices_seleccionados = [opciones[s] for s in seleccion]
+                filas = []
+                for idx in indices_seleccionados:
+                    u = usuarios_actuales[idx]
+                    filas.append(
+                        {
+                            "idx": idx,
+                            "tipoDocumentoIdentificacion": u.get("tipoDocumentoIdentificacion"),
+                            "numDocumentoIdentificacion": u.get("numDocumentoIdentificacion"),
+                        }
+                    )
 
-            json_filtrado_bytes = json.dumps(
-                nota_filtrada, ensure_ascii=False, indent=2
-            ).encode("utf-8")
+                st.markdown("**Usuarios incluidos en la exportación filtrada:**")
+                st.dataframe(pd.DataFrame(filas), use_container_width=True, height=200)
 
-            col_json_f, col_xml_f = st.columns(2)
-            with col_json_f:
-                st.download_button(
-                    "⬇️ Descargar JSON (solo usuarios completados)",
-                    data=json_filtrado_bytes,
-                    file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_solo_usuarios_completados.json",
-                    mime="application/json",
-                )
-            with col_xml_f:
-                xml_filtrado_bytes = nota_json_a_xml_bytes(nota_filtrada)
-                st.download_button(
-                    "⬇️ Descargar XML (solo usuarios completados)",
-                    data=xml_filtrado_bytes,
-                    file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_solo_usuarios_completados.xml",
-                    mime="application/xml",
-                )
+                nota_filtrada = {k: v for k, v in nota_data.items() if k != "usuarios"}
+                nota_filtrada["usuarios"] = [usuarios_actuales[i] for i in indices_seleccionados]
+
+                json_filtrado_bytes = json.dumps(
+                    nota_filtrada, ensure_ascii=False, indent=2
+                ).encode("utf-8")
+
+                col_json_f, col_xml_f = st.columns(2)
+                with col_json_f:
+                    st.download_button(
+                        "⬇️ Descargar JSON (solo usuarios seleccionados)",
+                        data=json_filtrado_bytes,
+                        file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_usuarios_seleccionados.json",
+                        mime="application/json",
+                    )
+                with col_xml_f:
+                    xml_filtrado_bytes = nota_json_a_xml_bytes(nota_filtrada)
+                    st.download_button(
+                        "⬇️ Descargar XML (solo usuarios seleccionados)",
+                        data=xml_filtrado_bytes,
+                        file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_usuarios_seleccionados.xml",
+                        mime="application/xml",
+                    )
 
 
 if __name__ == "__main__":
