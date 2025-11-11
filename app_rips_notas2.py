@@ -13,6 +13,7 @@ from xml.dom import minidom
 # Constantes de campos
 # ==========================
 
+# Campos demográficos a nivel de usuario
 CAMPOS_PACIENTE = [
     "tipoDocumentoIdentificacion",
     "numDocumentoIdentificacion",
@@ -27,6 +28,7 @@ CAMPOS_PACIENTE = [
     "consecutivo",
 ]
 
+# Grupos de servicios esperados
 SERVICIO_GRUPOS = [
     "consultas",
     "procedimientos",
@@ -37,7 +39,7 @@ SERVICIO_GRUPOS = [
     "otrosServicios",
 ]
 
-# Longitud fija de códigos (para ceros a la izquierda)
+# Longitudes fijas para códigos (para ceros a la izquierda)
 CODIGOS_LONGITUD = {
     "tipoUsuario": 2,
     "codPaisResidencia": 3,
@@ -52,6 +54,7 @@ CODIGOS_LONGITUD = {
 # ==========================
 
 def tiene_lista_con_items(servicios: Any) -> bool:
+    """True si en 'servicios' hay al menos una lista con 1 ítem."""
     if not isinstance(servicios, dict):
         return False
     for v in servicios.values():
@@ -61,7 +64,7 @@ def tiene_lista_con_items(servicios: Any) -> bool:
 
 
 def ajustar_signo_servicios(servicios: Dict[str, Any], signo: int) -> None:
-    """Cambia el signo de vrServicio y valorPagoModerador."""
+    """Multiplica por 'signo' vrServicio y valorPagoModerador en todas las listas de servicios."""
     for lista in servicios.values():
         if not isinstance(lista, list):
             continue
@@ -74,7 +77,7 @@ def ajustar_signo_servicios(servicios: Dict[str, Any], signo: int) -> None:
 
 
 def normalizar_servicios_usuario(usuario: Dict[str, Any]) -> None:
-    """Asegura que existan todas las listas de servicios en el usuario."""
+    """Asegura que existan todas las listas de servicios por usuario."""
     serv = usuario.get("servicios")
     if not isinstance(serv, dict):
         serv = {}
@@ -85,6 +88,7 @@ def normalizar_servicios_usuario(usuario: Dict[str, Any]) -> None:
 
 
 def normalizar_documento_servicios(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Normaliza la estructura de servicios en todos los usuarios del documento."""
     usuarios = doc.get("usuarios")
     if not isinstance(usuarios, list):
         return doc
@@ -112,7 +116,13 @@ def formatear_codigo_campo(campo: str, valor: Any) -> str:
 
 
 def normalizar_codigos_usuarios(nota: Dict[str, Any]) -> Dict[str, Any]:
-    """tipoUsuario=08, fechas, códigos, consecutivo."""
+    """
+    Ajusta todos los usuarios:
+      - tipoUsuario -> "08"
+      - Códigos con ceros a la izquierda
+      - fechaNacimiento en YYYY-MM-DD
+      - consecutivo como int si es posible
+    """
     usuarios = nota.get("usuarios", [])
     if not isinstance(usuarios, list):
         return nota
@@ -124,7 +134,7 @@ def normalizar_codigos_usuarios(nota: Dict[str, Any]) -> Dict[str, Any]:
         # tipoUsuario fijo "08"
         u["tipoUsuario"] = "08"
 
-        # Códigos
+        # Codificaciones de longitud fija
         for campo in ("codPaisResidencia", "codPaisOrigen",
                       "codMunicipioResidencia", "codZonaTerritorialResidencia"):
             if campo in u and u[campo] not in (None, ""):
@@ -152,7 +162,8 @@ def copiar_servicios_factura_a_nota(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
     Copia datos demográficos y servicios desde FACTURA -> NOTA.
-    Empareja por tipoDocumento + numDocumento.
+    Empareja usuarios por tipoDocumento + numDocumento (y si no, por número).
+    Solo copia servicios para usuarios que en la nota no tienen ninguna lista con ítems.
     """
     inv_users = factura.get("usuarios", [])
     note_users = nota.get("usuarios", [])
@@ -188,7 +199,7 @@ def copiar_servicios_factura_a_nota(
             usuarios_sin_encontrar.append((tipo, num))
             continue
 
-        # Copiar datos del paciente desde factura
+        # Copiar SIEMPRE datos del paciente desde factura
         for campo in CAMPOS_PACIENTE:
             val = u_fact.get(campo, None)
 
@@ -213,7 +224,7 @@ def copiar_servicios_factura_a_nota(
 
         usuarios_demografia_completada += 1
 
-        # normalizar servicios
+        # Normalizar estructuras de servicios
         normalizar_servicios_usuario(u_fact)
         normalizar_servicios_usuario(u)
 
@@ -247,6 +258,7 @@ def copiar_servicios_factura_a_nota(
 
 
 def generar_resumen_usuarios(nota: Dict[str, Any]) -> pd.DataFrame:
+    """Tabla resumen por usuario (estado de servicios)."""
     filas: List[Dict[str, Any]] = []
     for idx, u in enumerate(nota.get("usuarios", [])):
         servicios = u.get("servicios", {})
@@ -275,6 +287,7 @@ def obtener_claves_servicio_esperadas(
     factura: Optional[Dict[str, Any]],
     nota: Optional[Dict[str, Any]],
 ) -> List[str]:
+    """Toma el ítem de servicio más completo (con más campos) entre factura y nota y usa sus llaves como referencia."""
     mejor_keys: set = set()
     mejor_len = 0
     for doc in (factura, nota):
@@ -300,6 +313,7 @@ def desglosar_servicios_usuario(
     usuario: Optional[Dict[str, Any]],
     claves_esperadas: List[str],
 ) -> List[Dict[str, Any]]:
+    """Devuelve una fila por servicio del usuario, indicando campos faltantes."""
     filas: List[Dict[str, Any]] = []
     if not usuario:
         return filas
@@ -332,7 +346,9 @@ def generar_plantilla_servicios(
     nota: Dict[str, Any],
     factura: Optional[Dict[str, Any]],
 ) -> Tuple[BytesIO, str, str]:
-    """Genera Excel/CSV para edición masiva."""
+    """
+    Genera plantilla para edición masiva de servicios (demográficos + vrServicio).
+    """
     claves_esperadas = obtener_claves_servicio_esperadas(factura, nota)
     filas: List[Dict[str, Any]] = []
 
@@ -408,7 +424,11 @@ def aplicar_plantilla_servicios(
     factura: Optional[Dict[str, Any]],
     archivo_plantilla,
 ) -> Tuple[Dict[str, Any], List[str]]:
-    """Lee Excel/CSV y actualiza vrServicio (y demográficos si se llenan)."""
+    """
+    Aplica cambios de la plantilla:
+      - Actualiza vrServicio_nota.
+      - Puede actualizar también datos demográficos.
+    """
     errores: List[str] = []
 
     try:
@@ -456,7 +476,7 @@ def aplicar_plantilla_servicios(
 
         usuario_nota = usuarios_nota[idx_u]
 
-        # Actualizar datos del paciente si vienen
+        # Actualizar datos del paciente si llegan en la plantilla
         for campo in CAMPOS_PACIENTE:
             if campo not in df.columns:
                 continue
@@ -487,7 +507,7 @@ def aplicar_plantilla_servicios(
 
         lista = servicios_nota.get(tipo_serv)
 
-        # Si no existe en nota, intentar copiar de factura
+        # Si la estructura no existe, intentar copiar desde factura
         if not (isinstance(lista, list) and idx_item < len(lista)):
             if not factura:
                 errores.append(
@@ -557,14 +577,49 @@ def aplicar_plantilla_servicios(
 # XML interno RipsDocumento
 # ==========================
 
+def _add_generic_xml(parent: ET.Element, key: str, value: Any) -> None:
+    """
+    Conversión genérica dict -> XML:
+      - dict  -> <key>...</key> con hijos
+      - list  -> <key> repetido (o singular si termina en 's')
+      - escalar -> <key>texto</key>
+    """
+    if isinstance(value, dict):
+        elem = ET.SubElement(parent, key)
+        for k, v in value.items():
+            _add_generic_xml(elem, k, v)
+
+    elif isinstance(value, list):
+        child_tag = key[:-1] if key.endswith("s") else key
+        for item in value:
+            if isinstance(item, dict):
+                elem = ET.SubElement(parent, child_tag)
+                for k, v in item.items():
+                    _add_generic_xml(elem, k, v)
+            else:
+                elem = ET.SubElement(parent, child_tag)
+                elem.text = "" if item is None else str(item)
+
+    else:
+        elem = ET.SubElement(parent, key)
+        elem.text = "" if value is None else str(value)
+
+
 def nota_json_a_xml_element(nota: Dict[str, Any]) -> ET.Element:
+    """
+    Genera el XML interno RipsDocumento:
+      - Recorre todos los campos del JSON, incluyendo informacionesAdicionales y otros objetos.
+      - 'usuarios' se trata con estructura especial (usuario / servicios / items).
+    """
     root = ET.Element("RipsDocumento")
+
+    # Cabecera y cualquier otro campo, menos usuarios
     for key, val in nota.items():
         if key == "usuarios":
             continue
-        child = ET.SubElement(root, key)
-        child.text = "" if val is None else str(val)
+        _add_generic_xml(root, key, val)
 
+    # Sección de usuarios
     usuarios_el = ET.SubElement(root, "usuarios")
     for u in nota.get("usuarios", []):
         u_el = ET.SubElement(usuarios_el, "usuario")
@@ -581,18 +636,35 @@ def nota_json_a_xml_element(nota: Dict[str, Any]) -> ET.Element:
                                     for kk, vv in item.items():
                                         c_el = ET.SubElement(it_el, str(kk))
                                         c_el.text = "" if vv is None else str(vv)
+                                else:
+                                    c_el = ET.SubElement(it_el, "valor")
+                                    c_el.text = "" if item is None else str(item)
                 continue
-            c_el = ET.SubElement(u_el, str(k))
-            c_el.text = "" if v is None else str(v)
+
+            _add_generic_xml(u_el, str(k), v)
+
     return root
 
 
 def nota_json_a_xml_bytes(nota: Dict[str, Any]) -> bytes:
+    """
+    Serializa RipsDocumento con:
+      - Pretty print
+      - Encabezado: <?xml version="1.0" encoding="utf-8" standalone="no"?>
+    """
     elem = nota_json_a_xml_element(nota)
     rough_xml = ET.tostring(elem, encoding="utf-8")
     dom = minidom.parseString(rough_xml)
-    pretty = dom.toprettyxml(indent="  ", encoding="utf-8")
-    return pretty
+    pretty = dom.toprettyxml(indent="  ")
+
+    lineas = pretty.splitlines()
+    if lineas and lineas[0].startswith("<?xml"):
+        lineas[0] = '<?xml version="1.0" encoding="utf-8" standalone="no"?>'
+    else:
+        lineas.insert(0, '<?xml version="1.0" encoding="utf-8" standalone="no"?>')
+
+    final = "\n".join(lineas)
+    return final.encode("utf-8")
 
 
 # ==========================
@@ -650,7 +722,7 @@ def main():
     factura_data = obtener_factura()
     nota_data = obtener_nota()
 
-    # Normalizar
+    # Normalizaciones
     if factura_data:
         factura_data = normalizar_documento_servicios(factura_data)
         st.session_state["factura_data"] = factura_data
@@ -662,8 +734,13 @@ def main():
     factura_data = obtener_factura()
     nota_data = obtener_nota()
 
-    # Encabezados
+    if not nota_data:
+        st.warning("Sube al menos el JSON de la NOTA para empezar.")
+        st.stop()
+
+    # ==== 2. Encabezados ====
     st.markdown("### 2️⃣ Encabezados de factura y nota")
+
     c1, c2 = st.columns(2)
     with c1:
         st.subheader("Factura (referencia)")
@@ -678,23 +755,19 @@ def main():
                 }
             )
         else:
-            st.info("Opcional: cargue la factura si desea completar la nota con su información.")
+            st.info("Opcional: carga la factura si quieres completar la nota con su información.")
 
     with c2:
         st.subheader("Nota (objetivo)")
-        if nota_data:
-            st.json(
-                {
-                    "numDocumentoIdObligado": nota_data.get("numDocumentoIdObligado"),
-                    "numFactura": nota_data.get("numFactura"),
-                    "tipoNota": nota_data.get("tipoNota"),
-                    "numNota": nota_data.get("numNota"),
-                    "usuarios": len(nota_data.get("usuarios", [])),
-                }
-            )
-        else:
-            st.warning("Suba el JSON de la nota/crédito para continuar.")
-            st.stop()
+        st.json(
+            {
+                "numDocumentoIdObligado": nota_data.get("numDocumentoIdObligado"),
+                "numFactura": nota_data.get("numFactura"),
+                "tipoNota": nota_data.get("tipoNota"),
+                "numNota": nota_data.get("numNota"),
+                "usuarios": len(nota_data.get("usuarios", [])),
+            }
+        )
 
     # ==== 3. Completar desde factura ====
     st.markdown("---")
@@ -705,11 +778,7 @@ def main():
         with col_a:
             opcion_signo = st.selectbox(
                 "Signo al copiar vrServicio / valorPagoModerador:",
-                (
-                    "Dejar igual que factura",
-                    "Forzar POSITIVOS",
-                    "Forzar NEGATIVOS",
-                ),
+                ("Dejar igual que factura", "Forzar POSITIVOS", "Forzar NEGATIVOS"),
             )
             signo = None
             if opcion_signo == "Forzar POSITIVOS":
@@ -733,7 +802,7 @@ def main():
                     f"Sin coincidencia en factura: {len(resumen['usuarios_sin_encontrar'])}"
                 )
     else:
-        st.info("Para este paso es necesario cargar la factura (pero es opcional).")
+        st.info("Si quieres rellenar desde la factura, cárgala en el panel lateral.")
 
     # ==== 4. Resumen usuarios ====
     st.markdown("---")
@@ -769,29 +838,28 @@ def main():
         usuario = usuarios_nota[idx_sel]
 
         st.write(
-            f"Usuario **{idx_sel}** — {usuario.get('tipoDocumentoIdentificacion')} "
+            f"Usuario **{idx_sel}** — "
+            f"{usuario.get('tipoDocumentoIdentificacion')} "
             f"{usuario.get('numDocumentoIdentificacion')}"
         )
 
-        claves_esperadas = obtener_claves_servicio_esperadas(
-            factura_data if factura_data else None, nota_data
-        )
+        claves_esperadas = obtener_claves_servicio_esperadas(factura_data, nota_data)
         filas_nota = desglosar_servicios_usuario(usuario, claves_esperadas)
 
         datos_paciente = {k: v for k, v in usuario.items() if k != "servicios"}
         with st.expander("📋 Datos del paciente (NOTA)", expanded=True):
             st.json(datos_paciente)
 
-        servicios_visuales = usuario.get("servicios", {}) or {}
+        servicios_visibles = usuario.get("servicios", {}) or {}
         if filas_nota:
             st.markdown("**Servicios del usuario (NOTA):**")
             st.dataframe(pd.DataFrame(filas_nota), use_container_width=True, height=260)
         else:
             st.info("Este usuario no tiene servicios en la nota.")
 
-        servicios_str = json.dumps(servicios_visuales, ensure_ascii=False, indent=2)
+        servicios_str = json.dumps(servicios_visibles, ensure_ascii=False, indent=2)
         servicios_editados = st.text_area(
-            "Editar JSON de `servicios` de este usuario (se guardará en la NOTA):",
+            "Editar JSON de `servicios` (se guarda en la NOTA):",
             value=servicios_str,
             height=260,
             key=f"servicios_usuario_{idx_sel}",
@@ -809,12 +877,12 @@ def main():
                 nota_data["usuarios"] = usuarios_nota
                 nota_data = normalizar_codigos_usuarios(nota_data)
                 st.session_state["nota_data"] = nota_data
-                st.success("Servicios actualizados en la nota para este usuario.")
+                st.success("Servicios actualizados para este usuario en la NOTA.")
 
         with st.expander("⚙️ Edición avanzada: usuario completo", expanded=False):
             usuario_str = json.dumps(usuario, ensure_ascii=False, indent=2)
             usuario_editado = st.text_area(
-                "JSON completo del usuario (NOTA):",
+                "JSON completo del usuario (se guarda en la NOTA):",
                 value=usuario_str,
                 height=260,
                 key=f"usuario_completo_{idx_sel}",
@@ -833,7 +901,7 @@ def main():
                         nota_data["usuarios"] = usuarios_nota
                         nota_data = normalizar_codigos_usuarios(nota_data)
                         st.session_state["nota_data"] = nota_data
-                        st.success("Usuario completo actualizado en la nota.")
+                        st.success("Usuario completo actualizado en la NOTA.")
     else:
         st.info("No hay usuarios en la nota para editar.")
 
@@ -844,11 +912,12 @@ def main():
     campos_paciente_txt = "`, `".join(CAMPOS_PACIENTE)
     st.markdown(
         f"""
-        - Cada fila representa **un servicio** de **un usuario**.
+        - Cada fila de la plantilla representa **un servicio** de **un usuario**.
         - Campos clave:
           - `idx_usuario`, `tipo_servicio`, `idx_item`, `vrServicio_factura`, `vrServicio_nota`.
-        - Además puedes corregir demográficos: `{campos_paciente_txt}`.
-        - Solo se aplica cambio al servicio si `vrServicio_nota` tiene valor.
+        - Puedes corregir demográficos también:
+          - `{campos_paciente_txt}`.
+        - Solo se aplica el cambio de servicio cuando `vrServicio_nota` tiene valor.
         """
     )
 
@@ -874,7 +943,7 @@ def main():
             st.session_state["nota_data"] = nota_actualizada
             nota_data = nota_actualizada
             if errores:
-                st.warning("Se aplicaron los cambios, con las siguientes observaciones:")
+                st.warning("Se aplicaron los cambios con las siguientes observaciones:")
                 for e in errores:
                     st.write("- ", e)
             else:
@@ -901,7 +970,7 @@ def main():
         )
     with col_ex2:
         st.download_button(
-            "⬇️ XML interno RipsDocumento (NO es el XML DIAN)",
+            "⬇️ XML interno RipsDocumento (NO es XML DIAN)",
             data=xml_bytes,
             file_name=f"{base_name}_RipsDocumento.xml",
             mime="application/xml",
@@ -909,7 +978,7 @@ def main():
 
     # ==== 8. Exportar solo usuarios con nota aplicada (vía Excel) ====
     st.markdown("---")
-    st.subheader("8️⃣ Exportar solo usuarios con nota crédito aplicada (actualizados masivamente)")
+    st.subheader("8️⃣ Exportar solo usuarios con nota crédito aplicada (desde plantilla masiva)")
 
     usuarios_actuales = nota_data.get("usuarios", []) or []
     updated_from_excel = st.session_state.get("usuarios_actualizados_desde_excel", [])
@@ -918,9 +987,12 @@ def main():
     if not usuarios_actuales:
         st.info("La nota no tiene usuarios.")
     elif not updated_set:
-        st.info("Aún no hay usuarios marcados como actualizados desde Excel (se marcan al aplicar la plantilla).")
+        st.info(
+            "Aún no hay usuarios marcados como actualizados desde Excel. "
+            "Aplica primero una plantilla en la sección 6."
+        )
     else:
-        opciones = {}
+        opciones: Dict[str, int] = {}
         for idx, u in enumerate(usuarios_actuales):
             if idx in updated_set and tiene_lista_con_items(u.get("servicios")):
                 label = f"{idx} - {u.get('tipoDocumentoIdentificacion','')} {u.get('numDocumentoIdentificacion','')}"
@@ -941,6 +1013,7 @@ def main():
                 )
             st.dataframe(pd.DataFrame(filas), use_container_width=True, height=200)
 
+            # Exportar todos
             indices_todos = sorted(opciones.values())
             nota_filtrada_todos = {k: v for k, v in nota_data.items() if k != "usuarios"}
             nota_filtrada_todos["usuarios"] = [usuarios_actuales[i] for i in indices_todos]
