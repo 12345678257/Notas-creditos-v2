@@ -67,7 +67,7 @@ def ajustar_signo_servicios(servicios: Dict[str, Any], signo: int) -> None:
                 continue
             for campo in ("vrServicio", "valorPagoModerador"):
                 if campo in item and isinstance(item[campo], (int, float)):
-                    item[campo] = item[ccampo] * signo
+                    item[campo] = item[campo] * signo
 
 
 def normalizar_servicios_usuario(usuario: Dict[str, Any]) -> None:
@@ -100,6 +100,18 @@ def normalizar_documento_servicios(doc: Dict[str, Any]) -> Dict[str, Any]:
     return doc
 
 
+def formatear_valor_id(valor: Any) -> str:
+    """
+    Convierte valores provenientes de Excel (que pueden venir como float 1.0, int, etc.)
+    en una cadena sin parte decimal si no es necesaria.
+    """
+    if isinstance(valor, float):
+        if valor.is_integer():
+            return str(int(valor))
+        return str(valor)
+    return str(valor)
+
+
 def copiar_servicios_factura_a_nota(
     factura: Dict[str, Any],
     nota: Dict[str, Any],
@@ -109,7 +121,7 @@ def copiar_servicios_factura_a_nota(
     Completa la NOTA a partir de la FACTURA:
 
     - Empareja pacientes por tipoDocumentoIdentificacion + numDocumentoIdentificacion (y si falla, por número).
-    - Completa campos demográficos faltantes en la nota con los de la factura.
+    - Copia/ajusta SIEMPRE los campos demográficos para que queden iguales a la factura.
     - Si el usuario en la nota NO tiene ningún servicio (todas las listas vacías),
       copia todos los servicios desde la factura (misma estructura).
     """
@@ -150,15 +162,13 @@ def copiar_servicios_factura_a_nota(
             usuarios_sin_encontrar.append(key_full)
             continue
 
-        # Completar datos demográficos del paciente si faltan
+        # Copiar SIEMPRE los datos demográficos (si existen en factura) para que queden iguales
         campos_actualizados = []
         for campo in CAMPOS_PACIENTE:
-            val_nota = u.get(campo, None)
-            if val_nota in (None, ""):
-                val_fact = u_fact.get(campo, None)
-                if val_fact not in (None, ""):
-                    u[campo] = val_fact
-                    campos_actualizados.append(campo)
+            val_fact = u_fact.get(campo, None)
+            if val_fact not in (None, "") and u.get(campo) != val_fact:
+                u[campo] = val_fact
+                campos_actualizados.append(campo)
         if campos_actualizados:
             usuarios_demografia_completada += 1
 
@@ -413,6 +423,8 @@ def aplicar_plantilla_servicios(
       y luego actualiza vrServicio.
     - Además, si la plantilla trae columnas de CAMPOS_PACIENTE, actualiza esos campos
       a nivel de usuario en la nota (último valor registrado para ese usuario gana).
+    - Registra qué usuarios fueron actualizados desde Excel en
+      st.session_state["usuarios_actualizados_desde_excel"].
     """
     errores: List[str] = []
 
@@ -434,6 +446,8 @@ def aplicar_plantilla_servicios(
 
     usuarios_nota = nota.get("usuarios", [])
     usuarios_fac = factura.get("usuarios", []) if factura else []
+
+    updated_indices = set(st.session_state.get("usuarios_actualizados_desde_excel", []))
 
     for _, fila in df.iterrows():
         try:
@@ -464,13 +478,23 @@ def aplicar_plantilla_servicios(
         for campo in CAMPOS_PACIENTE:
             if campo in df.columns:
                 valor_campo = fila[campo]
-                if not pd.isna(valor_campo):
-                    if campo == "consecutivo":
-                        try:
-                            valor_campo = int(valor_campo)
-                        except Exception:
-                            pass
+                if pd.isna(valor_campo):
+                    continue
+                if campo == "consecutivo":
+                    try:
+                        valor_campo = int(valor_campo)
+                    except Exception:
+                        # lo dejamos como viene si no se puede convertir
+                        pass
                     usuario_nota[campo] = valor_campo
+                elif campo == "fechaNacimiento":
+                    texto = str(valor_campo)
+                    usuario_nota[campo] = texto[:10]
+                else:
+                    # Forzar a string, cuidando decimales .0
+                    if isinstance(valor_campo, float) and valor_campo.is_integer():
+                        valor_campo = int(valor_campo)
+                    usuario_nota[campo] = str(valor_campo)
 
         servicios_nota = usuario_nota.get("servicios")
         if not isinstance(servicios_nota, dict):
@@ -488,13 +512,36 @@ def aplicar_plantilla_servicios(
                 )
                 usuarios_nota[idx_u] = usuario_nota
                 continue
-            if not (0 <= idx_u < len(usuarios_fac)):
-                errores.append(
-                    f"No se encontró el usuario {idx_u} en la factura para crear la estructura de servicios."
-                )
-                usuarios_nota[idx_u] = usuario_nota
-                continue
-            usuario_fac = usuarios_fac[idx_u]
+
+            usuario_fac = None
+
+            # Intentar localizar usuario en factura por tipo y número de documento (datos de la fila)
+            if "tipoDocumentoIdentificacion" in df.columns and "numDocumentoIdentificacion" in df.columns:
+                tipo_excel = fila["tipoDocumentoIdentificacion"]
+                num_excel = fila["numDocumentoIdentificacion"]
+                if not pd.isna(tipo_excel) and not pd.isna(num_excel):
+                    tipo_excel_str = str(tipo_excel)
+                    num_excel_str = formatear_valor_id(num_excel)
+                    for uf in usuarios_fac:
+                        if not isinstance(uf, dict):
+                            continue
+                        if (
+                            uf.get("tipoDocumentoIdentificacion") == tipo_excel_str
+                            and str(uf.get("numDocumentoIdentificacion")) == num_excel_str
+                        ):
+                            usuario_fac = uf
+                            break
+
+            # Si no se encontró por documento, usar el mismo índice
+            if usuario_fac is None:
+                if not (0 <= idx_u < len(usuarios_fac)):
+                    errores.append(
+                        f"No se encontró el usuario {idx_u} en la factura para crear la estructura de servicios."
+                    )
+                    usuarios_nota[idx_u] = usuario_nota
+                    continue
+                usuario_fac = usuarios_fac[idx_u]
+
             servicios_fac = usuario_fac.get("servicios", {})
             lista_fac = servicios_fac.get(tipo_serv)
             if not (isinstance(lista_fac, list) and idx_item < len(lista_fac)):
@@ -540,7 +587,11 @@ def aplicar_plantilla_servicios(
         usuario_nota["servicios"] = servicios_nota
         usuarios_nota[idx_u] = usuario_nota
 
+        # Registrar que este usuario fue actualizado desde Excel
+        updated_indices.add(idx_u)
+
     nota["usuarios"] = usuarios_nota
+    st.session_state["usuarios_actualizados_desde_excel"] = sorted(list(updated_indices))
     return nota, errores
 
 
@@ -825,7 +876,7 @@ def main():
                 nota_data = nota_actualizada
                 st.success(
                     f"Usuarios modificados (servicios copiados): {resumen['usuarios_modificados']}, "
-                    f"usuarios con datos del paciente completados: {resumen['usuarios_demografia_completada']}, "
+                    f"usuarios con datos del paciente copiados/ajustados desde factura: {resumen['usuarios_demografia_completada']}, "
                     f"ya tenían servicios: {resumen['usuarios_ya_tenian_servicios']}, "
                     f"sin coincidencia en factura: {len(resumen['usuarios_sin_encontrar'])}."
                 )
@@ -1018,28 +1069,36 @@ def main():
             mime="application/xml",
         )
 
-    # ---- 8. Exportar usuarios seleccionados con servicios completos ----
+    # ---- 8. Exportar usuarios seleccionados ACTUALIZADOS desde Excel ----
     st.markdown("---")
-    st.subheader("8️⃣ Exportar SOLO los usuarios seleccionados con servicios completos")
+    st.subheader("8️⃣ Exportar SOLO los usuarios actualizados desde Excel (nota crédito aplicada)")
 
     usuarios_actuales = nota_data.get("usuarios", []) or []
+    updated_from_excel = st.session_state.get("usuarios_actualizados_desde_excel", [])
+    updated_set = set(updated_from_excel)
+
     if not usuarios_actuales:
         st.info("La nota no tiene usuarios para filtrar.")
+    elif not updated_set:
+        st.info(
+            "Aún no hay usuarios marcados como actualizados desde la plantilla Excel.\n"
+            "Primero aplique cambios masivos con la sección 6 y luego regrese aquí."
+        )
     else:
         opciones: Dict[str, int] = {}
         for idx, u in enumerate(usuarios_actuales):
-            if tiene_lista_con_items(u.get("servicios")):
+            if idx in updated_set and tiene_lista_con_items(u.get("servicios")):
                 label = f"{idx} - {u.get('tipoDocumentoIdentificacion','')} {u.get('numDocumentoIdentificacion','')}"
                 opciones[label] = idx
 
         if not opciones:
             st.info(
-                "Ningún usuario tiene servicios completos aún. "
-                "Primero copie/edite los servicios y luego regrese a esta sección."
+                "No se encontraron usuarios con servicios completos dentro del grupo "
+                "marcado como actualizado desde Excel."
             )
         else:
             seleccion = st.multiselect(
-                "Seleccione los usuarios a los que aplicará la nota crédito (solo usuarios con servicios):",
+                "Seleccione los usuarios a los que aplicó la nota crédito (actualizados por Excel):",
                 list(opciones.keys()),
             )
 
@@ -1071,7 +1130,7 @@ def main():
                 col_json_f, col_xml_f = st.columns(2)
                 with col_json_f:
                     st.download_button(
-                        "⬇️ Descargar JSON (solo usuarios seleccionados)",
+                        "⬇️ Descargar JSON (solo usuarios seleccionados actualizados por Excel)",
                         data=json_filtrado_bytes,
                         file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_usuarios_seleccionados.json",
                         mime="application/json",
@@ -1079,7 +1138,7 @@ def main():
                 with col_xml_f:
                     xml_filtrado_bytes = nota_json_a_xml_bytes(nota_filtrada)
                     st.download_button(
-                        "⬇️ Descargar XML (solo usuarios seleccionados)",
+                        "⬇️ Descargar XML (solo usuarios seleccionados actualizados por Excel)",
                         data=xml_filtrado_bytes,
                         file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_usuarios_seleccionados.xml",
                         mime="application/xml",
