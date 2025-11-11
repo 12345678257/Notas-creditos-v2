@@ -121,7 +121,8 @@ def copiar_servicios_factura_a_nota(
     Completa la NOTA a partir de la FACTURA:
 
     - Empareja pacientes por tipoDocumentoIdentificacion + numDocumentoIdentificacion (y si falla, por número).
-    - Copia/ajusta SIEMPRE los campos demográficos para que queden iguales a la factura.
+    - Copia SIEMPRE los campos demográficos desde la factura, casteando tipo correctamente:
+        - Todos string menos 'consecutivo' (int).
     - Si el usuario en la nota NO tiene ningún servicio (todas las listas vacías),
       copia todos los servicios desde la factura (misma estructura).
     """
@@ -162,13 +163,23 @@ def copiar_servicios_factura_a_nota(
             usuarios_sin_encontrar.append(key_full)
             continue
 
-        # Copiar SIEMPRE los datos demográficos (si existen en factura) para que queden iguales
+        # Copiar SIEMPRE los datos demográficos desde la factura con tipos correctos
         campos_actualizados = []
         for campo in CAMPOS_PACIENTE:
             val_fact = u_fact.get(campo, None)
-            if val_fact not in (None, "") and u.get(campo) != val_fact:
-                u[campo] = val_fact
-                campos_actualizados.append(campo)
+            if val_fact in (None, ""):
+                continue
+            if campo == "consecutivo":
+                try:
+                    u[campo] = int(val_fact)
+                except Exception:
+                    u[campo] = val_fact
+            elif campo == "fechaNacimiento":
+                texto = str(val_fact)
+                u[campo] = texto[:10]
+            else:
+                u[campo] = str(val_fact)
+            campos_actualizados.append(campo)
         if campos_actualizados:
             usuarios_demografia_completada += 1
 
@@ -484,14 +495,12 @@ def aplicar_plantilla_servicios(
                     try:
                         valor_campo = int(valor_campo)
                     except Exception:
-                        # lo dejamos como viene si no se puede convertir
                         pass
                     usuario_nota[campo] = valor_campo
                 elif campo == "fechaNacimiento":
                     texto = str(valor_campo)
                     usuario_nota[campo] = texto[:10]
                 else:
-                    # Forzar a string, cuidando decimales .0
                     if isinstance(valor_campo, float) and valor_campo.is_integer():
                         valor_campo = int(valor_campo)
                     usuario_nota[campo] = str(valor_campo)
@@ -1069,9 +1078,9 @@ def main():
             mime="application/xml",
         )
 
-    # ---- 8. Exportar usuarios seleccionados ACTUALIZADOS desde Excel ----
+    # ---- 8. Exportar usuarios actualizados desde Excel ----
     st.markdown("---")
-    st.subheader("8️⃣ Exportar SOLO los usuarios actualizados desde Excel (nota crédito aplicada)")
+    st.subheader("8️⃣ Exportar usuarios con nota crédito aplicada (actualizados desde Excel)")
 
     usuarios_actuales = nota_data.get("usuarios", []) or []
     updated_from_excel = st.session_state.get("usuarios_actualizados_desde_excel", [])
@@ -1097,50 +1106,75 @@ def main():
                 "marcado como actualizado desde Excel."
             )
         else:
+            # Mostrar todos los usuarios afectados por Excel
+            filas = []
+            for label, idx in opciones.items():
+                u = usuarios_actuales[idx]
+                filas.append(
+                    {
+                        "idx": idx,
+                        "tipoDocumentoIdentificacion": u.get("tipoDocumentoIdentificacion"),
+                        "numDocumentoIdentificacion": u.get("numDocumentoIdentificacion"),
+                    }
+                )
+            st.markdown("**Usuarios que tienen nota crédito aplicada (actualizados por Excel):**")
+            st.dataframe(pd.DataFrame(filas), use_container_width=True, height=220)
+
+            indices_todos = sorted(opciones.values())
+            nota_filtrada_todos = {k: v for k, v in nota_data.items() if k != "usuarios"}
+            nota_filtrada_todos["usuarios"] = [usuarios_actuales[i] for i in indices_todos]
+
+            json_todos_bytes = json.dumps(
+                nota_filtrada_todos, ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            xml_todos_bytes = nota_json_a_xml_bytes(nota_filtrada_todos)
+
+            st.markdown("### 🔁 Exportar directamente TODOS los usuarios con nota crédito aplicada")
+            col_json_all, col_xml_all = st.columns(2)
+            with col_json_all:
+                st.download_button(
+                    "⬇️ JSON (todos los usuarios actualizados por Excel)",
+                    data=json_todos_bytes,
+                    file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_nota_credito_todos.json",
+                    mime="application/json",
+                )
+            with col_xml_all:
+                st.download_button(
+                    "⬇️ XML (todos los usuarios actualizados por Excel)",
+                    data=xml_todos_bytes,
+                    file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_nota_credito_todos.xml",
+                    mime="application/xml",
+                )
+
+            st.markdown("### 🎯 (Opcional) Exportar solo algunos de esos usuarios")
             seleccion = st.multiselect(
-                "Seleccione los usuarios a los que aplicó la nota crédito (actualizados por Excel):",
+                "Seleccione solo los usuarios que quiera exportar (subconjunto de los anteriores):",
                 list(opciones.keys()),
             )
 
-            if not seleccion:
-                st.info("Seleccione al menos un usuario para generar JSON/XML filtrados.")
-            else:
+            if seleccion:
                 indices_seleccionados = [opciones[s] for s in seleccion]
-                filas = []
-                for idx in indices_seleccionados:
-                    u = usuarios_actuales[idx]
-                    filas.append(
-                        {
-                            "idx": idx,
-                            "tipoDocumentoIdentificacion": u.get("tipoDocumentoIdentificacion"),
-                            "numDocumentoIdentificacion": u.get("numDocumentoIdentificacion"),
-                        }
-                    )
-
-                st.markdown("**Usuarios incluidos en la exportación filtrada:**")
-                st.dataframe(pd.DataFrame(filas), use_container_width=True, height=200)
-
                 nota_filtrada = {k: v for k, v in nota_data.items() if k != "usuarios"}
                 nota_filtrada["usuarios"] = [usuarios_actuales[i] for i in indices_seleccionados]
 
                 json_filtrado_bytes = json.dumps(
                     nota_filtrada, ensure_ascii=False, indent=2
                 ).encode("utf-8")
+                xml_filtrado_bytes = nota_json_a_xml_bytes(nota_filtrada)
 
                 col_json_f, col_xml_f = st.columns(2)
                 with col_json_f:
                     st.download_button(
-                        "⬇️ Descargar JSON (solo usuarios seleccionados actualizados por Excel)",
+                        "⬇️ JSON (solo usuarios seleccionados)",
                         data=json_filtrado_bytes,
-                        file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_usuarios_seleccionados.json",
+                        file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_nota_credito_seleccionados.json",
                         mime="application/json",
                     )
                 with col_xml_f:
-                    xml_filtrado_bytes = nota_json_a_xml_bytes(nota_filtrada)
                     st.download_button(
-                        "⬇️ Descargar XML (solo usuarios seleccionados actualizados por Excel)",
+                        "⬇️ XML (solo usuarios seleccionados)",
                         data=xml_filtrado_bytes,
-                        file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_usuarios_seleccionados.xml",
+                        file_name=f"{nombre_nota_base.rsplit('.', 1)[0]}_nota_credito_seleccionados.xml",
                         mime="application/xml",
                     )
 
