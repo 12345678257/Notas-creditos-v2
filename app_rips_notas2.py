@@ -10,6 +10,26 @@ from xml.dom import minidom
 
 
 # ==========================
+# Constantes de campos
+# ==========================
+
+# Campos demográficos del paciente a nivel de usuario
+CAMPOS_PACIENTE = [
+    "tipoDocumentoIdentificacion",
+    "numDocumentoIdentificacion",
+    "tipoUsuario",
+    "fechaNacimiento",
+    "codSexo",
+    "codPaisResidencia",
+    "codMunicipioResidencia",
+    "codZonaTerritorialResidencia",
+    "codPaisOrigen",
+    "incapacidad",
+    "consecutivo",
+]
+
+
+# ==========================
 # Utilidades de negocio
 # ==========================
 
@@ -232,6 +252,7 @@ def generar_plantilla_servicios(
     - Si hay factura, se trae vrServicio_factura como referencia (mismo idx_usuario/tipo_servicio/idx_item).
     - Si en la nota un usuario no tiene estructura de servicios pero sí existe en la factura,
       se generan filas base para ese usuario usando la factura.
+    - Además incluye campos demográficos del paciente (CAMPOS_PACIENTE) por fila.
     """
     claves_esperadas = obtener_claves_servicio_esperadas(factura, nota)
     filas: List[Dict[str, Any]] = []
@@ -251,38 +272,43 @@ def generar_plantilla_servicios(
             key = (f["tipo_servicio"], f["idx_item"])
             map_fac[key] = f
 
+        def agregar_campos_paciente(base: Dict[str, Any]):
+            for campo in CAMPOS_PACIENTE:
+                if u_nota is not None and campo in u_nota:
+                    base[campo] = u_nota.get(campo)
+                elif u_fac is not None and campo in u_fac:
+                    base[campo] = u_fac.get(campo)
+                else:
+                    base[campo] = None
+
         if filas_nota:
             # Usuario ya tiene servicios en la nota
             for f in filas_nota:
                 key = (f["tipo_servicio"], f["idx_item"])
                 base_fac = map_fac.get(key, {})
-                filas.append(
-                    {
-                        "idx_usuario": idx_u,
-                        "tipoDocumentoIdentificacion": u_nota.get("tipoDocumentoIdentificacion"),
-                        "numDocumentoIdentificacion": u_nota.get("numDocumentoIdentificacion"),
-                        "tipo_servicio": f["tipo_servicio"],
-                        "idx_item": f["idx_item"],
-                        "vrServicio_factura": base_fac.get("vrServicio") if base_fac else None,
-                        "vrServicio_nota": f.get("vrServicio"),
-                        "campos_faltantes_nota": f.get("campos_faltantes", ""),
-                    }
-                )
+                fila = {
+                    "idx_usuario": idx_u,
+                    "tipo_servicio": f["tipo_servicio"],
+                    "idx_item": f["idx_item"],
+                    "vrServicio_factura": base_fac.get("vrServicio") if base_fac else None,
+                    "vrServicio_nota": f.get("vrServicio"),
+                    "campos_faltantes_nota": f.get("campos_faltantes", ""),
+                }
+                agregar_campos_paciente(fila)
+                filas.append(fila)
         else:
             # Usuario no tiene servicios en la nota; si hay en factura, generamos filas base
             for f in filas_fac:
-                filas.append(
-                    {
-                        "idx_usuario": idx_u,
-                        "tipoDocumentoIdentificacion": u_nota.get("tipoDocumentoIdentificacion"),
-                        "numDocumentoIdentificacion": u_nota.get("numDocumentoIdentificacion"),
-                        "tipo_servicio": f["tipo_servicio"],
-                        "idx_item": f["idx_item"],
-                        "vrServicio_factura": f.get("vrServicio"),
-                        "vrServicio_nota": None,
-                        "campos_faltantes_nota": "TODOS (usuario sin estructura de servicios en nota)",
-                    }
-                )
+                fila = {
+                    "idx_usuario": idx_u,
+                    "tipo_servicio": f["tipo_servicio"],
+                    "idx_item": f["idx_item"],
+                    "vrServicio_factura": f.get("vrServicio"),
+                    "vrServicio_nota": None,
+                    "campos_faltantes_nota": "TODOS (usuario sin estructura de servicios en nota)",
+                }
+                agregar_campos_paciente(fila)
+                filas.append(fila)
 
     df = pd.DataFrame(filas)
     buffer = BytesIO()
@@ -312,6 +338,8 @@ def aplicar_plantilla_servicios(
     - Si la nota ya tiene la estructura de servicios para esa fila, solo actualiza vrServicio.
     - Si la nota NO tiene esa estructura pero sí existe en la factura, copia la línea de la factura
       y luego actualiza vrServicio.
+    - Además, si la plantilla trae columnas de CAMPOS_PACIENTE, actualiza esos campos
+      a nivel de usuario en la nota (último valor registrado para ese usuario gana).
     """
     errores: List[str] = []
 
@@ -350,6 +378,7 @@ def aplicar_plantilla_servicios(
 
         vr_nota = fila["vrServicio_nota"]
         if pd.isna(vr_nota):
+            # Si no diligenciaron valor de nota, no tocamos ese servicio
             continue
 
         if not (0 <= idx_u < len(usuarios_nota)):
@@ -357,6 +386,20 @@ def aplicar_plantilla_servicios(
             continue
 
         usuario_nota = usuarios_nota[idx_u]
+
+        # Actualizar campos demográficos del paciente desde la plantilla (si vienen)
+        for campo in CAMPOS_PACIENTE:
+            if campo in df.columns:
+                valor_campo = fila[campo]
+                if not pd.isna(valor_campo):
+                    # Convertir a int si corresponde (ej. consecutivo)
+                    if campo == "consecutivo":
+                        try:
+                            valor_campo = int(valor_campo)
+                        except Exception:
+                            pass
+                    usuario_nota[campo] = valor_campo
+
         servicios_nota = usuario_nota.get("servicios")
         if not isinstance(servicios_nota, dict):
             servicios_nota = {}
@@ -371,11 +414,13 @@ def aplicar_plantilla_servicios(
                     f"No existe estructura de servicios para usuario {idx_u}, "
                     f"tipo '{tipo_serv}', ítem {idx_item} y no hay factura cargada."
                 )
+                usuarios_nota[idx_u] = usuario_nota
                 continue
             if not (0 <= idx_u < len(usuarios_fac)):
                 errores.append(
                     f"No se encontró el usuario {idx_u} en la factura para crear la estructura de servicios."
                 )
+                usuarios_nota[idx_u] = usuario_nota
                 continue
             usuario_fac = usuarios_fac[idx_u]
             servicios_fac = usuario_fac.get("servicios", {})
@@ -385,6 +430,7 @@ def aplicar_plantilla_servicios(
                     f"No se encontró línea base en factura para usuario {idx_u}, "
                     f"tipo '{tipo_serv}', ítem {idx_item}."
                 )
+                usuarios_nota[idx_u] = usuario_nota
                 continue
 
             item_base = copy.deepcopy(lista_fac[idx_item])
@@ -401,6 +447,7 @@ def aplicar_plantilla_servicios(
                 f"No se pudo asegurar la estructura de servicios para usuario {idx_u}, "
                 f"tipo '{tipo_serv}', ítem {idx_item}."
             )
+            usuarios_nota[idx_u] = usuario_nota
             continue
 
         item_nota = lista[idx_item]
@@ -412,6 +459,7 @@ def aplicar_plantilla_servicios(
                 f"Valor de vrServicio_nota inválido para usuario {idx_u}, "
                 f"tipo '{tipo_serv}', ítem {idx_item}: {vr_nota}"
             )
+            usuarios_nota[idx_u] = usuario_nota
             continue
 
         item_nota["vrServicio"] = valor_nota
@@ -662,7 +710,7 @@ def main():
 
     # ---- 4. Edición individual ----
     st.markdown("---")
-    st.subheader("4️⃣ Edición individual de servicios (NOTA, con opción de ver FACTURA)")
+    st.subheader("4️⃣ Edición individual de usuarios y servicios (NOTA)")
 
     usuarios_nota = nota_data.get("usuarios", [])
     if not usuarios_nota:
@@ -677,16 +725,22 @@ def main():
             step=1,
         )
         usuario_nota = usuarios_nota[idx_sel]
+
         st.write(
             f"Usuario índice **{idx_sel}** – "
             f"{usuario_nota.get('tipoDocumentoIdentificacion')} "
             f"{usuario_nota.get('numDocumentoIdentificacion')}"
         )
 
+        # Datos demográficos del paciente (nota)
+        datos_paciente = {k: v for k, v in usuario_nota.items() if k != "servicios"}
+        with st.expander("📋 Datos del paciente (JSON de la NOTA)", expanded=True):
+            st.json(datos_paciente)
+
         # Servicios de la nota
         filas_nota = desglosar_servicios_usuario(usuario_nota, claves_esperadas)
 
-        # Servicios de la factura (solo si modo lo permite)
+        # Servicios de la factura para este usuario (solo si modo lo permite)
         usuario_fac = None
         filas_fac: List[Dict[str, Any]] = []
         if usar_factura and factura_data:
@@ -699,37 +753,31 @@ def main():
             st.markdown("**Servicios del usuario según la NOTA (campos faltantes al final):**")
             st.dataframe(pd.DataFrame(filas_nota), use_container_width=True, height=260)
             servicios_visuales = usuario_nota.get("servicios", {})
-            origen = "nota"
         elif filas_fac:
             st.markdown(
                 "**Este usuario no tiene servicios cargados en la NOTA, "
-                "pero sí en la FACTURA. Se muestran los servicios de la FACTURA como plantilla.**"
+                "pero sí en la FACTURA (modo referencia). Se muestran los servicios de la FACTURA como plantilla.**"
             )
             st.dataframe(pd.DataFrame(filas_fac), use_container_width=True, height=260)
             servicios_visuales = usuario_fac.get("servicios", {}) if usuario_fac else {}
-            origen = "factura"
         else:
             st.info("Este usuario no tiene servicios en el JSON de la NOTA.")
             servicios_visuales = usuario_nota.get("servicios", {}) or {}
-            origen = "nota"
 
-        # Editor JSON crudo (lo que se guarde siempre va a la NOTA)
+        # Editor JSON de servicios (lo que se guarde va a la NOTA)
         servicios_str = json.dumps(servicios_visuales, ensure_ascii=False, indent=2)
-
-        ayuda_texto = (
+        ayuda_servicios = (
             "Edite el JSON de `servicios` que se guardará en la **NOTA** para este usuario.\n"
-            "- Si lo que ve viene de la FACTURA (modo de trabajo con referencia), "
-            "al guardar se copiará esa estructura a la NOTA.\n"
+            "- Si lo que ve proviene de la FACTURA, al guardar se copiará esa estructura a la NOTA.\n"
         )
-
         servicios_editados = st.text_area(
-            ayuda_texto,
+            ayuda_servicios,
             value=servicios_str,
             height=260,
             key=f"servicios_usuario_{idx_sel}",
         )
 
-        if st.button("Guardar cambios en este usuario (NOTA)"):
+        if st.button("Guardar SOLO servicios en este usuario (NOTA)"):
             try:
                 servicios_nuevos = json.loads(servicios_editados)
             except json.JSONDecodeError as exc:
@@ -741,23 +789,49 @@ def main():
                 st.session_state["nota_data"] = nota_data
                 st.success("Servicios actualizados correctamente en el JSON de la NOTA para este usuario.")
 
+        # Editor avanzado: usuario completo
+        with st.expander("⚙️ Edición avanzada: usuario completo (demográficos + servicios)", expanded=False):
+            usuario_str = json.dumps(usuario_nota, ensure_ascii=False, indent=2)
+            usuario_editado = st.text_area(
+                "JSON completo del usuario (se guardará tal cual en la NOTA).",
+                value=usuario_str,
+                height=260,
+                key=f"usuario_completo_{idx_sel}",
+            )
+            if st.button("Guardar usuario completo (NOTA)", key=f"btn_usuario_completo_{idx_sel}"):
+                try:
+                    nuevo_usuario = json.loads(usuario_editado)
+                except json.JSONDecodeError as exc:
+                    st.error(f"El JSON del usuario no es válido: {exc}")
+                else:
+                    if not isinstance(nuevo_usuario, dict):
+                        st.error("El JSON del usuario debe ser un objeto/dict.")
+                    else:
+                        usuarios_nota[idx_sel] = nuevo_usuario
+                        nota_data["usuarios"] = usuarios_nota
+                        st.session_state["nota_data"] = nota_data
+                        st.success("Usuario completo actualizado correctamente en la NOTA.")
+
     # ---- 5. Edición masiva con plantilla ----
     st.markdown("---")
-    st.subheader("5️⃣ Edición masiva con plantilla (valor de la nota por servicio)")
+    st.subheader("5️⃣ Edición masiva con plantilla (demográficos + valor de la nota por servicio)")
 
     st.markdown(
         """
         **Plantilla (xlsx/csv):**
 
-        - Cada fila = un servicio de un usuario (según la NOTA; si está vacía y el modo lo permite, se usa la FACTURA).
-        - Campos clave:
+        - Cada fila = un servicio de un usuario.
+        - Incluye campos demográficos del paciente (a nivel de usuario) y datos del servicio.
+        - Campos clave mínimos:
           - `idx_usuario`: índice del usuario en `nota['usuarios']`.
           - `tipo_servicio`: (ej. `consultas`, `procedimientos`).
           - `idx_item`: posición del servicio en la lista de ese tipo.
-          - `vrServicio_factura`: valor en la factura (referencia).
+          - `vrServicio_factura`: valor en la factura (referencia, si hay factura).
           - `vrServicio_nota`: valor que tendrá el servicio en la NOTA (este lo diligencia usted).
           - `campos_faltantes_nota`: campos del servicio que están vacíos/None en la nota.
-        - Solo se aplican cambios en filas donde `vrServicio_nota` tenga un valor.
+        - Además, puede corregir masivamente los campos del paciente:
+          - `""" + "`, `".join(CAMPOS_PACIENTE) + """`
+        - Solo se aplican cambios de servicio en filas donde `vrServicio_nota` tenga un valor.
         """
     )
 
