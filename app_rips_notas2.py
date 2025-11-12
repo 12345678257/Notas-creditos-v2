@@ -145,7 +145,7 @@ def normalizar_codigos_usuarios(nota: Dict[str, Any]) -> Dict[str, Any]:
         # consecutivo
         if "consecutivo" in u and u["consecutivo"] not in (None, ""):
             try:
-                u["consecutivo"] = int(u["consecutivo"])
+                u[campo] = int(u["consecutivo"])
             except Exception:
                 pass
 
@@ -697,9 +697,9 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
         <cbc:Description><![CDATA[ ... ]]></cbc:Description>
     en un XML AttachedDocument ***RIPS*** por el XML de RipsDocumento.
 
-    Valida que la plantilla:
-      - Dentro del CDATA tenga <RipsDocumento ...> (si no, probablemente es la NC DIAN).
-      - El nuevo XML también tenga <RipsDocumento ...>.
+    Bloquea explícitamente:
+      - Plantillas que dentro del CDATA tengan <CreditNote ...> (Nota Crédito DIAN).
+      - Plantillas que no tengan <RipsDocumento ...>.
     """
     # Decodificamos el XML de plantilla
     try:
@@ -741,13 +741,21 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
     # 5) Extraer contenido original del CDATA
     original_cdata = attached_text[idx_content:idx_end]
 
+    # Si en el CDATA hay <CreditNote>, claramente es una Nota Crédito DIAN, NO RIPS
+    if "<CreditNote" in original_cdata or "<CreditNote" in original_cdata.replace(" ", ""):
+        raise ValueError(
+            "La plantilla XML corresponde a una Nota Crédito DIAN (tiene <CreditNote> en el CDATA). "
+            "Esta NO es una plantilla RIPS. "
+            "No uses aquí el XML de la Nota Crédito DIAN; usa el AttachedDocument RIPS "
+            "(el que tiene <RipsDocumento> dentro del <![CDATA[ ... ]]>)."
+        )
+
     # Validación: la plantilla DEBE tener <RipsDocumento> dentro del CDATA
     if "<RipsDocumento" not in original_cdata and "<RipsDocumento" not in original_cdata.replace(" ", ""):
         raise ValueError(
             "La plantilla XML no parece ser un AttachedDocument RIPS "
             "(no se encontró '<RipsDocumento>' dentro del CDATA). "
-            "Probablemente estás usando el XML de la Nota Crédito DIAN (con <CreditNote>). "
-            "Ese archivo NO debe modificarse aquí."
+            "Probablemente estás usando un XML que no es RIPS."
         )
 
     # Validación: el XML nuevo también debe tener <RipsDocumento>
@@ -761,6 +769,7 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
     new_text = attached_text[:idx_content] + rips_text + attached_text[idx_end:]
 
     return new_text.encode("utf-8")
+
 
 # ==========================
 # Helpers de filtrado de nota
