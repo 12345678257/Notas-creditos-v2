@@ -51,6 +51,7 @@ CODIGOS_LONGITUD = {
 # ==========================
 
 def tiene_lista_con_items(servicios: Any) -> bool:
+    """True si en 'servicios' hay al menos una lista con 1 ítem."""
     if not isinstance(servicios, dict):
         return False
     for v in servicios.values():
@@ -60,6 +61,7 @@ def tiene_lista_con_items(servicios: Any) -> bool:
 
 
 def ajustar_signo_servicios(servicios: Dict[str, Any], signo: int) -> None:
+    """Multiplica por 'signo' vrServicio y valorPagoModerador en todas las listas de servicios."""
     for lista in servicios.values():
         if not isinstance(lista, list):
             continue
@@ -72,6 +74,7 @@ def ajustar_signo_servicios(servicios: Dict[str, Any], signo: int) -> None:
 
 
 def normalizar_servicios_usuario(usuario: Dict[str, Any]) -> None:
+    """Asegura que existan todas las listas de servicios por usuario."""
     serv = usuario.get("servicios")
     if not isinstance(serv, dict):
         serv = {}
@@ -82,6 +85,7 @@ def normalizar_servicios_usuario(usuario: Dict[str, Any]) -> None:
 
 
 def normalizar_documento_servicios(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Normaliza la estructura de servicios en todos los usuarios del documento."""
     usuarios = doc.get("usuarios")
     if not isinstance(usuarios, list):
         return doc
@@ -93,6 +97,7 @@ def normalizar_documento_servicios(doc: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def formatear_codigo_campo(campo: str, valor: Any) -> str:
+    """Aplica longitud fija y ceros a la izquierda según el campo."""
     if valor is None or valor == "":
         return ""
     if isinstance(valor, float) and valor.is_integer():
@@ -108,6 +113,13 @@ def formatear_codigo_campo(campo: str, valor: Any) -> str:
 
 
 def normalizar_codigos_usuarios(nota: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ajusta todos los usuarios:
+      - tipoUsuario -> "08"
+      - Códigos con ceros a la izquierda
+      - fechaNacimiento en YYYY-MM-DD
+      - consecutivo como int si es posible
+    """
     usuarios = nota.get("usuarios", [])
     if not isinstance(usuarios, list):
         return nota
@@ -116,16 +128,20 @@ def normalizar_codigos_usuarios(nota: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(u, dict):
             continue
 
-        u["tipoUsuario"] = "08"  # fijo
+        # tipoUsuario fijo "08"
+        u["tipoUsuario"] = "08"
 
+        # Codificaciones de longitud fija
         for campo in ("codPaisResidencia", "codPaisOrigen",
                       "codMunicipioResidencia", "codZonaTerritorialResidencia"):
             if campo in u and u[campo] not in (None, ""):
                 u[campo] = formatear_codigo_campo(campo, u[campo])
 
+        # fechaNacimiento
         if "fechaNacimiento" in u and u["fechaNacimiento"]:
             u["fechaNacimiento"] = str(u["fechaNacimiento"])[:10]
 
+        # consecutivo
         if "consecutivo" in u and u["consecutivo"] not in (None, ""):
             try:
                 u["consecutivo"] = int(u["consecutivo"])
@@ -141,6 +157,11 @@ def copiar_servicios_factura_a_nota(
     nota: Dict[str, Any],
     forzar_signo: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Copia datos demográficos y servicios desde FACTURA -> NOTA.
+    Empareja usuarios por tipoDocumento + numDocumento (y si no, por número).
+    Solo copia servicios para usuarios que en la nota no tienen ninguna lista con ítems.
+    """
     inv_users = factura.get("usuarios", [])
     note_users = nota.get("usuarios", [])
 
@@ -175,6 +196,7 @@ def copiar_servicios_factura_a_nota(
             usuarios_sin_encontrar.append((tipo, num))
             continue
 
+        # Copiar SIEMPRE datos del paciente desde factura
         for campo in CAMPOS_PACIENTE:
             val = u_fact.get(campo, None)
 
@@ -199,6 +221,7 @@ def copiar_servicios_factura_a_nota(
 
         usuarios_demografia_completada += 1
 
+        # Normalizar estructuras de servicios
         normalizar_servicios_usuario(u_fact)
         normalizar_servicios_usuario(u)
 
@@ -232,6 +255,7 @@ def copiar_servicios_factura_a_nota(
 
 
 def generar_resumen_usuarios(nota: Dict[str, Any]) -> pd.DataFrame:
+    """Tabla resumen por usuario (estado de servicios)."""
     filas: List[Dict[str, Any]] = []
     for idx, u in enumerate(nota.get("usuarios", [])):
         servicios = u.get("servicios", {})
@@ -260,6 +284,7 @@ def obtener_claves_servicio_esperadas(
     factura: Optional[Dict[str, Any]],
     nota: Optional[Dict[str, Any]],
 ) -> List[str]:
+    """Toma el ítem de servicio más completo (con más campos) entre factura y nota y usa sus llaves como referencia."""
     mejor_keys: set = set()
     mejor_len = 0
     for doc in (factura, nota):
@@ -285,6 +310,7 @@ def desglosar_servicios_usuario(
     usuario: Optional[Dict[str, Any]],
     claves_esperadas: List[str],
 ) -> List[Dict[str, Any]]:
+    """Devuelve una fila por servicio del usuario, indicando campos faltantes."""
     filas: List[Dict[str, Any]] = []
     if not usuario:
         return filas
@@ -317,6 +343,9 @@ def generar_plantilla_servicios(
     nota: Dict[str, Any],
     factura: Optional[Dict[str, Any]],
 ) -> Tuple[BytesIO, str, str]:
+    """
+    Genera plantilla para edición masiva de servicios (demográficos + vrServicio).
+    """
     claves_esperadas = obtener_claves_servicio_esperadas(factura, nota)
     filas: List[Dict[str, Any]] = []
 
@@ -392,6 +421,11 @@ def aplicar_plantilla_servicios(
     factura: Optional[Dict[str, Any]],
     archivo_plantilla,
 ) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Aplica cambios de la plantilla:
+      - Actualiza vrServicio_nota.
+      - Puede actualizar también datos demográficos.
+    """
     errores: List[str] = []
 
     try:
@@ -439,7 +473,7 @@ def aplicar_plantilla_servicios(
 
         usuario_nota = usuarios_nota[idx_u]
 
-        # demográficos
+        # Actualizar datos del paciente si llegan en la plantilla
         for campo in CAMPOS_PACIENTE:
             if campo not in df.columns:
                 continue
@@ -470,10 +504,12 @@ def aplicar_plantilla_servicios(
 
         lista = servicios_nota.get(tipo_serv)
 
+        # Si la estructura no existe, intentar copiar desde factura
         if not (isinstance(lista, list) and idx_item < len(lista)):
             if not factura:
                 errores.append(
-                    f"No existe estructura para usuario {idx_u}, tipo '{tipo_serv}', ítem {idx_item} y no hay factura."
+                    f"No existe estructura para usuario {idx_u}, tipo '{tipo_serv}', "
+                    f"ítem {idx_item} y no hay factura."
                 )
                 usuarios_nota[idx_u] = usuario_nota
                 continue
@@ -491,7 +527,8 @@ def aplicar_plantilla_servicios(
             lista_fac = servicios_fac.get(tipo_serv)
             if not (isinstance(lista_fac, list) and idx_item < len(lista_fac)):
                 errores.append(
-                    f"No hay línea base en factura para usuario {idx_u}, tipo '{tipo_serv}', ítem {idx_item}."
+                    f"No hay línea base en factura para usuario {idx_u}, "
+                    f"tipo '{tipo_serv}', ítem {idx_item}."
                 )
                 usuarios_nota[idx_u] = usuario_nota
                 continue
@@ -507,7 +544,8 @@ def aplicar_plantilla_servicios(
         lista = servicios_nota.get(tipo_serv, [])
         if not (isinstance(lista, list) and idx_item < len(lista)):
             errores.append(
-                f"No se pudo asegurar la estructura para usuario {idx_u}, tipo '{tipo_serv}', ítem {idx_item}."
+                f"No se pudo asegurar la estructura para usuario {idx_u}, "
+                f"tipo '{tipo_serv}', ítem {idx_item}."
             )
             usuarios_nota[idx_u] = usuario_nota
             continue
@@ -517,7 +555,8 @@ def aplicar_plantilla_servicios(
             valor_nota = float(vr_nota)
         except Exception:
             errores.append(
-                f"Valor vrServicio_nota inválido en usuario {idx_u}, tipo '{tipo_serv}', ítem {idx_item}: {vr_nota}"
+                f"Valor vrServicio_nota inválido en usuario {idx_u}, "
+                f"tipo '{tipo_serv}', ítem {idx_item}: {vr_nota}"
             )
             usuarios_nota[idx_u] = usuario_nota
             continue
@@ -540,6 +579,12 @@ def aplicar_plantilla_servicios(
 # ==========================
 
 def _add_generic_xml(parent: ET.Element, key: str, value: Any) -> None:
+    """
+    Conversión genérica dict -> XML:
+      - dict  -> <key>...</key> con hijos
+      - list  -> <key> repetido (o singular si termina en 's')
+      - escalar -> <key>texto</key>
+    """
     if isinstance(value, dict):
         elem = ET.SubElement(parent, key)
         for k, v in value.items():
@@ -562,13 +607,20 @@ def _add_generic_xml(parent: ET.Element, key: str, value: Any) -> None:
 
 
 def nota_json_a_xml_element(nota: Dict[str, Any]) -> ET.Element:
+    """
+    Genera el XML interno RipsDocumento:
+      - Recorre todos los campos del JSON, incluyendo informacionesAdicionales y otros objetos.
+      - 'usuarios' se trata con estructura especial (usuario / servicios / items).
+    """
     root = ET.Element("RipsDocumento")
 
+    # Cabecera y cualquier otro campo, menos usuarios
     for key, val in nota.items():
         if key == "usuarios":
             continue
         _add_generic_xml(root, key, val)
 
+    # Sección de usuarios
     usuarios_el = ET.SubElement(root, "usuarios")
     for u in nota.get("usuarios", []):
         u_el = ET.SubElement(usuarios_el, "usuario")
@@ -589,12 +641,18 @@ def nota_json_a_xml_element(nota: Dict[str, Any]) -> ET.Element:
                                     c_el = ET.SubElement(it_el, "valor")
                                     c_el.text = "" if item is None else str(item)
                 continue
+
             _add_generic_xml(u_el, str(k), v)
 
     return root
 
 
 def nota_json_a_xml_bytes(nota: Dict[str, Any]) -> bytes:
+    """
+    Serializa RipsDocumento con:
+      - Pretty print
+      - Encabezado: <?xml version="1.0" encoding="utf-8" standalone="no"?>
+    """
     elem = nota_json_a_xml_element(nota)
     rough_xml = ET.tostring(elem, encoding="utf-8")
     dom = minidom.parseString(rough_xml)
@@ -614,8 +672,13 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
     """
     Reemplaza el contenido del PRIMER:
         <cbc:Description><![CDATA[ ... ]]></cbc:Description>
-    en un XML AttachedDocument completo, por el XML de RipsDocumento.
+    en un XML AttachedDocument ***RIPS*** por el XML de RipsDocumento.
+
+    Valida que la plantilla:
+      - Dentro del CDATA tenga <RipsDocumento ...> (si no, probablemente es la NC DIAN).
+      - El nuevo XML también tenga <RipsDocumento ...>.
     """
+    # Decodificamos el XML de plantilla
     try:
         attached_text = attached_bytes.decode("utf-8")
     except UnicodeDecodeError:
@@ -628,14 +691,40 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
 
     idx_start = attached_text.find(marker_start)
     if idx_start == -1:
-        raise ValueError("No se encontró '<cbc:Description><![CDATA[' en el XML de plantilla.")
+        raise ValueError(
+            "No se encontró '<cbc:Description><![CDATA[' en el XML de plantilla. "
+            "Asegúrate de usar el AttachedDocument **RIPS**, no el XML de la Nota Crédito DIAN."
+        )
 
     idx_content = idx_start + len(marker_start)
     idx_end = attached_text.find(marker_end, idx_content)
     if idx_end == -1:
-        raise ValueError("No se encontró ']]></cbc:Description>' en el XML de plantilla.")
+        raise ValueError(
+            "No se encontró ']]></cbc:Description>' en el XML de plantilla."
+        )
 
+    # Contenido original del CDATA
+    original_cdata = attached_text[idx_content:idx_end]
+
+    # Validación: la plantilla debe tener <RipsDocumento> en el CDATA
+    if "<RipsDocumento" not in original_cdata and "<RipsDocumento" not in original_cdata.replace(" ", ""):
+        raise ValueError(
+            "La plantilla XML no parece ser un AttachedDocument RIPS "
+            "(no se encontró '<RipsDocumento>' dentro del CDATA). "
+            "Probablemente estás usando el XML de la Nota Crédito DIAN (con <CreditNote>). "
+            "Ese archivo NO debe modificarse aquí."
+        )
+
+    # Validación: el XML nuevo también debe tener <RipsDocumento>
+    if "<RipsDocumento" not in rips_text and "<RipsDocumento" not in rips_text.replace(" ", ""):
+        raise ValueError(
+            "El XML generado de la nota no contiene '<RipsDocumento>'. "
+            "Revisa que el RipsDocumento se haya construido correctamente."
+        )
+
+    # Reemplazamos SOLO el contenido del CDATA por el nuevo RipsDocumento completo
     new_text = attached_text[:idx_content] + rips_text + attached_text[idx_end:]
+
     return new_text.encode("utf-8")
 
 
@@ -680,9 +769,13 @@ def main():
     nota_file = st.sidebar.file_uploader("JSON NOTA (NC / incompleta)", type=["json"])
     plantilla_file = st.sidebar.file_uploader("Plantilla masiva (xlsx o csv)", type=["xlsx", "csv"])
     attached_template_file = st.sidebar.file_uploader(
-        "XML plantilla AttachedDocument (completo DIAN/RIPS)",
+        "XML plantilla AttachedDocument RIPS",
         type=["xml"],
-        help="Adjunta el XML completo que descargas del portal (con CreditNote, ApplicationResponse, etc.).",
+        help=(
+            "Adjunta aquí el XML AttachedDocument **RIPS** (el que ya tiene "
+            "<RipsDocumento> dentro del <![CDATA[ ... ]]>). "
+            "NO pongas el XML de la Nota Crédito DIAN (el que tiene <CreditNote>)."
+        ),
     )
 
     if "factura_data" not in st.session_state:
@@ -698,6 +791,7 @@ def main():
     factura_data = obtener_factura()
     nota_data = obtener_nota()
 
+    # Normalizaciones iniciales
     if factura_data:
         factura_data = normalizar_documento_servicios(factura_data)
         st.session_state["factura_data"] = factura_data
@@ -1047,14 +1141,15 @@ def main():
 
     # ==== 9. AttachedDocument completo con RipsDocumento dentro ====
     st.markdown("---")
-    st.subheader("9️⃣ Generar XML AttachedDocument completo (plantilla DIAN + RipsDocumento)")
+    st.subheader("9️⃣ Generar XML AttachedDocument RIPS (plantilla + RipsDocumento)")
 
     if attached_template_file is None:
         st.info(
-            "Si el validador del Ministerio te pide un XML tipo 'AttachedDocument', "
-            "carga en el panel lateral el XML completo que descargas del portal DIAN. "
-            "Aquí solo se reemplaza el contenido del primer <![CDATA[ ... ]]> "
-            "por el RipsDocumento de la nota."
+            "Para PNC001 (Nota Crédito RIPS), carga en el panel lateral el XML "
+            "AttachedDocument **RIPS** que ya genera tu sistema (el que tiene "
+            "<RipsDocumento> dentro del <![CDATA[ ... ]]>). "
+            "Aquí solo se reemplaza ese RipsDocumento interno por el nuevo "
+            "con los valores corregidos."
         )
     else:
         if st.button("Generar AttachedDocument con RipsDocumento incrustado"):
@@ -1070,8 +1165,8 @@ def main():
                 )
             else:
                 st.success(
-                    "Se generó el XML AttachedDocument con el RipsDocumento completo "
-                    "dentro del primer <![CDATA[ ... ]]>."
+                    "Se generó el XML AttachedDocument RIPS con el RipsDocumento "
+                    "actualizado dentro del primer <![CDATA[ ... ]]>."
                 )
                 st.download_button(
                     "⬇️ Descargar AttachedDocument RIPS",
