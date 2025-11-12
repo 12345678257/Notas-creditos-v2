@@ -605,6 +605,129 @@ def _add_generic_xml(parent: ET.Element, key: str, value: Any) -> None:
     else:
         elem = ET.SubElement(parent, key)
         elem.text = "" if value is None else str(value)
+def generar_attached_document_nc(
+    id_nc: str,
+    uuid_nc: str,
+    issue_date: str,
+    issue_time: str,
+    parent_document_id: str,
+    sender_name: str,
+    sender_nit: str,
+    receiver_name: str,
+    receiver_nit: str,
+    creditnote_xml: str,
+    sender_scheme_id: str = "0",        # como en tu ejemplo ad09010024870232504509337.xml
+    sender_tax_level_code: str = "O-23",
+    receiver_scheme_id: str = "7",      # como en tu ejemplo
+    receiver_tax_level_code: str = "R-99-PN",
+    app_response_xml: str | None = None,
+) -> str:
+    """
+    Genera el AttachedDocument DIAN de una Nota Crédito, con estructura
+    muy similar al archivo ad09010024870232504509337.xml.
+
+    - creditnote_xml: debe ser el XML completo de <CreditNote>...</CreditNote>.
+    - app_response_xml: (opcional) XML completo de <ApplicationResponse>...</ApplicationResponse>.
+    """
+
+    creditnote_xml_clean = (creditnote_xml or "").strip()
+    if not creditnote_xml_clean:
+        raise ValueError("Debes pasar el XML completo de la CreditNote en 'creditnote_xml'.")
+
+    app_resp_block = ""
+    if app_response_xml:
+        app_response_xml_clean = app_response_xml.strip()
+        app_resp_block = f"""
+  <cac:ParentDocumentLineReference>
+    <cbc:LineID>1</cbc:LineID>
+    <cac:DocumentReference>
+      <cbc:ID>{id_nc}</cbc:ID>
+      <cbc:UUID schemeName="CUDE-SHA384">{uuid_nc}</cbc:UUID>
+      <cbc:IssueDate>{issue_date}</cbc:IssueDate>
+      <cbc:DocumentType>ApplicationResponse</cbc:DocumentType>
+      <cac:Attachment>
+        <cac:ExternalReference>
+          <cbc:MimeCode>text/xml</cbc:MimeCode>
+          <cbc:EncodingCode>UTF-8</cbc:EncodingCode>
+          <cbc:Description><![CDATA[
+{app_response_xml_clean}
+          ]]></cbc:Description>
+        </cac:ExternalReference>
+      </cac:Attachment>
+    </cac:DocumentReference>
+    <cac:ResultOfVerification>
+      <cbc:ValidatorID>Unidad Especial Dirección de Impuestos y Aduanas Nacionales</cbc:ValidatorID>
+      <cbc:ValidationResultCode>02</cbc:ValidationResultCode>
+      <cbc:ValidationDate>{issue_date}</cbc:ValidationDate>
+      <cbc:ValidationTime>{issue_time}</cbc:ValidationTime>
+    </cac:ResultOfVerification>
+  </cac:ParentDocumentLineReference>"""
+
+    xml = f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<AttachedDocument
+    xmlns="urn:oasis:names:specification:ubl:schema:xsd:AttachedDocument-2"
+    xmlns:ds="http://www.w3.org/2000/09/xmldsig#"
+    xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"
+    xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"
+    xmlns:ccts="urn:un:unece:uncefact:data:specification:CoreComponentTypeSchemaModule:2"
+    xmlns:ext="urn:oasis:names:specification:ubl:schema:xsd:CommonExtensionComponents-2"
+    xmlns:xades="http://uri.etsi.org/01903/v1.3.2#"
+    xmlns:xades141="http://uri.etsi.org/01903/v1.4.1#">
+
+  <cbc:UBLVersionID>UBL 2.1</cbc:UBLVersionID>
+  <cbc:CustomizationID>Documentos adjuntos</cbc:CustomizationID>
+  <cbc:ProfileExecutionID>1</cbc:ProfileExecutionID>
+  <cbc:ProfileID>Nota Crédito de Factura Electrónica de Venta</cbc:ProfileID>
+
+  <!-- Identificación de la nota -->
+  <cbc:ID>{id_nc}</cbc:ID>
+  <cbc:UUID schemeName="CUDE-SHA384">{uuid_nc}</cbc:UUID>
+  <cbc:IssueDate>{issue_date}</cbc:IssueDate>
+  <cbc:IssueTime>{issue_time}</cbc:IssueTime>
+  <cbc:DocumentType>Contenedor de Factura Electrónica</cbc:DocumentType>
+  <cbc:ParentDocumentID>{parent_document_id}</cbc:ParentDocumentID>
+
+  <!-- Emisor -->
+  <cac:SenderParty>
+    <cac:PartyTaxScheme>
+      <cbc:RegistrationName>{sender_name}</cbc:RegistrationName>
+      <cbc:CompanyID schemeID="{sender_scheme_id}" schemeAgencyID="195" schemeName="31">{sender_nit}</cbc:CompanyID>
+      <cbc:TaxLevelCode>{sender_tax_level_code}</cbc:TaxLevelCode>
+      <cac:TaxScheme>
+        <cbc:ID>01</cbc:ID>
+        <cbc:Name>IVA</cbc:Name>
+      </cac:TaxScheme>
+    </cac:PartyTaxScheme>
+  </cac:SenderParty>
+
+  <!-- Adquirente -->
+  <cac:ReceiverParty>
+    <cac:PartyTaxScheme>
+      <cbc:RegistrationName>{receiver_name}</cbc:RegistrationName>
+      <cbc:CompanyID schemeID="{receiver_scheme_id}" schemeAgencyID="195" schemeName="31">{receiver_nit}</cbc:CompanyID>
+      <cbc:TaxLevelCode>{receiver_tax_level_code}</cbc:TaxLevelCode>
+      <cac:TaxScheme>
+        <cbc:ID>ZZ</cbc:ID>
+        <cbc:Name>No aplica</cbc:Name>
+      </cac:TaxScheme>
+    </cac:PartyTaxScheme>
+  </cac:ReceiverParty>
+
+  <!-- Nota crédito incrustada -->
+  <cac:Attachment>
+    <cac:ExternalReference>
+      <cbc:MimeCode>text/xml</cbc:MimeCode>
+      <cbc:EncodingCode>UTF-8</cbc:EncodingCode>
+      <cbc:Description><![CDATA[
+{creditnote_xml_clean}
+      ]]></cbc:Description>
+    </cac:ExternalReference>
+  </cac:Attachment>{app_resp_block}
+
+  <!-- OJO: cualquier firma <ds:Signature> adicional la agrega tu facturador / servicio de firma -->
+</AttachedDocument>
+"""
+    return xml
 
 
 def nota_json_a_xml_element(nota: Dict[str, Any]) -> ET.Element:
