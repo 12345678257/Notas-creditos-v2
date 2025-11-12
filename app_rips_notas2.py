@@ -707,29 +707,41 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
     except UnicodeDecodeError:
         attached_text = attached_bytes.decode("latin-1")
 
+    # XML de RipsDocumento nuevo
     rips_text = rips_bytes.decode("utf-8")
 
-    marker_start = "<cbc:Description><![CDATA["
-    marker_end = "]]></cbc:Description>"
-
-    idx_start = attached_text.find(marker_start)
-    if idx_start == -1:
+    # 1) Buscar la etiqueta <cbc:Description ...>
+    desc_tag = "<cbc:Description"
+    idx_desc = attached_text.find(desc_tag)
+    if idx_desc == -1:
         raise ValueError(
-            "No se encontró '<cbc:Description><![CDATA[' en el XML de plantilla. "
+            "No se encontró '<cbc:Description' en el XML de plantilla. "
             "Asegúrate de usar el AttachedDocument **RIPS**, no el XML de la Nota Crédito DIAN."
         )
 
-    idx_content = idx_start + len(marker_start)
+    # 2) Buscar el <![CDATA[ después de <cbc:Description ...>
+    idx_cdata = attached_text.find("<![CDATA[", idx_desc)
+    if idx_cdata == -1:
+        raise ValueError(
+            "No se encontró '<![CDATA[' después de <cbc:Description> en la plantilla. "
+            "Verifica que el AttachedDocument RIPS tenga el RipsDocumento dentro de CDATA."
+        )
+
+    # 3) Posición de inicio del contenido dentro del CDATA
+    idx_content = idx_cdata + len("<![CDATA[")
+
+    # 4) Buscar el final del CDATA + cierre de la etiqueta
+    marker_end = "]]></cbc:Description>"
     idx_end = attached_text.find(marker_end, idx_content)
     if idx_end == -1:
         raise ValueError(
             "No se encontró ']]></cbc:Description>' en el XML de plantilla."
         )
 
-    # Contenido original del CDATA
+    # 5) Extraer contenido original del CDATA
     original_cdata = attached_text[idx_content:idx_end]
 
-    # Validación: la plantilla debe tener <RipsDocumento> en el CDATA
+    # Validación: la plantilla DEBE tener <RipsDocumento> dentro del CDATA
     if "<RipsDocumento" not in original_cdata and "<RipsDocumento" not in original_cdata.replace(" ", ""):
         raise ValueError(
             "La plantilla XML no parece ser un AttachedDocument RIPS "
@@ -745,11 +757,10 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
             "Revisa que el RipsDocumento se haya construido correctamente."
         )
 
-    # Reemplazamos SOLO el contenido del CDATA por el nuevo RipsDocumento completo
+    # 6) Reemplazar SOLO el contenido del CDATA por el nuevo RipsDocumento completo
     new_text = attached_text[:idx_content] + rips_text + attached_text[idx_end:]
 
     return new_text.encode("utf-8")
-
 
 # ==========================
 # Helpers de filtrado de nota
