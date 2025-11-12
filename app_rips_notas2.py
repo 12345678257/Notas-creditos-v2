@@ -37,6 +37,7 @@ SERVICIO_GRUPOS = [
     "otrosServicios",
 ]
 
+# Longitud fija para códigos (ceros a la izquierda)
 CODIGOS_LONGITUD = {
     "tipoUsuario": 2,
     "codPaisResidencia": 3,
@@ -609,18 +610,40 @@ def _add_generic_xml(parent: ET.Element, key: str, value: Any) -> None:
 def nota_json_a_xml_element(nota: Dict[str, Any]) -> ET.Element:
     """
     Genera el XML interno RipsDocumento:
-      - Recorre todos los campos del JSON, incluyendo informacionesAdicionales y otros objetos.
+      - Recorre los campos estándar en orden:
+        numDocumentoIdObligado, numFactura, informacionesAdicionales, tipoNota, numNota.
+      - Luego añade otros campos top-level (si existen).
       - 'usuarios' se trata con estructura especial (usuario / servicios / items).
     """
     root = ET.Element("RipsDocumento")
 
-    # Cabecera y cualquier otro campo, menos usuarios
+    # Cabecera en orden típico
+    if "numDocumentoIdObligado" in nota:
+        _add_generic_xml(root, "numDocumentoIdObligado", nota["numDocumentoIdObligado"])
+    if "numFactura" in nota:
+        _add_generic_xml(root, "numFactura", nota["numFactura"])
+    if "informacionesAdicionales" in nota:
+        _add_generic_xml(root, "informacionesAdicionales", nota["informacionesAdicionales"])
+    if "tipoNota" in nota:
+        _add_generic_xml(root, "tipoNota", nota["tipoNota"])
+    if "numNota" in nota:
+        _add_generic_xml(root, "numNota", nota["numNota"])
+
+    # Otros campos top-level (si existen y no son usuarios ni los anteriores)
+    top_excluidos = {
+        "numDocumentoIdObligado",
+        "numFactura",
+        "informacionesAdicionales",
+        "tipoNota",
+        "numNota",
+        "usuarios",
+    }
     for key, val in nota.items():
-        if key == "usuarios":
+        if key in top_excluidos:
             continue
         _add_generic_xml(root, key, val)
 
-    # Sección de usuarios
+    # Sección de usuarios: SOLO los usuarios que trae el JSON de la nota
     usuarios_el = ET.SubElement(root, "usuarios")
     for u in nota.get("usuarios", []):
         u_el = ET.SubElement(usuarios_el, "usuario")
@@ -729,6 +752,28 @@ def incrustar_rips_en_attacheddocument_bytes(attached_bytes: bytes, rips_bytes: 
 
 
 # ==========================
+# Helpers de filtrado de nota
+# ==========================
+
+def construir_nota_filtrada_por_indices(nota: Dict[str, Any], indices: List[int]) -> Dict[str, Any]:
+    """
+    Construye una nueva nota a partir de la nota actual,
+    dejando cabecera igual y filtrando 'usuarios' por los índices dados.
+    """
+    usuarios = nota.get("usuarios", []) or []
+    nuevos_usuarios = []
+    for i in indices:
+        if 0 <= i < len(usuarios):
+            nuevos_usuarios.append(usuarios[i])
+
+    base = {k: v for k, v in nota.items() if k != "usuarios"}
+    base["usuarios"] = nuevos_usuarios
+    base = normalizar_documento_servicios(base)
+    base = normalizar_codigos_usuarios(base)
+    return base
+
+
+# ==========================
 # Helpers de sesión
 # ==========================
 
@@ -766,7 +811,7 @@ def main():
 
     st.sidebar.header("1️⃣ Cargar archivos")
     factura_file = st.sidebar.file_uploader("JSON FACTURA (referencia)", type=["json"])
-    nota_file = st.sidebar.file_uploader("JSON NOTA (NC / incompleta)", type=["json"])
+    nota_file = st.sidebar.file_uploader("JSON NOTA (NC / incompleta o solo actualizados)", type=["json"])
     plantilla_file = st.sidebar.file_uploader("Plantilla masiva (xlsx o csv)", type=["xlsx", "csv"])
     attached_template_file = st.sidebar.file_uploader(
         "XML plantilla AttachedDocument RIPS",
@@ -804,7 +849,7 @@ def main():
     nota_data = obtener_nota()
 
     if not nota_data:
-        st.warning("Sube al menos el JSON de la NOTA para empezar.")
+        st.warning("Sube al menos el JSON de la NOTA para empezar (puede ser completo o solo actualizados).")
         st.stop()
 
     # ==== 2. Encabezados ====
@@ -1019,7 +1064,7 @@ def main():
 
     # ==== 7. Exportar JSON/XML completos ====
     st.markdown("---")
-    st.subheader("7️⃣ Descargar JSON / XML interno (RipsDocumento) de la NOTA completa")
+    st.subheader("7️⃣ Descargar JSON / XML interno (RipsDocumento) de la NOTA actual")
 
     nota_data = normalizar_codigos_usuarios(nota_data)
     st.session_state["nota_data"] = nota_data
@@ -1031,7 +1076,7 @@ def main():
     col_ex1, col_ex2 = st.columns(2)
     with col_ex1:
         st.download_button(
-            "⬇️ JSON completo de la nota",
+            "⬇️ JSON de la nota (tal como está cargada)",
             data=nota_json_bytes,
             file_name=f"{base_name}_corregida.json",
             mime="application/json",
@@ -1057,7 +1102,7 @@ def main():
     elif not updated_set:
         st.info(
             "Aún no hay usuarios marcados como actualizados desde Excel. "
-            "Aplica primero una plantilla en la sección 6."
+            "Puedes usar simplemente el JSON actual si ya contiene solo los pacientes que necesitas."
         )
     else:
         opciones: Dict[str, int] = {}
@@ -1082,9 +1127,7 @@ def main():
             st.dataframe(pd.DataFrame(filas), use_container_width=True, height=200)
 
             indices_todos = sorted(opciones.values())
-            nota_filtrada_todos = {k: v for k, v in nota_data.items() if k != "usuarios"}
-            nota_filtrada_todos["usuarios"] = [usuarios_actuales[i] for i in indices_todos]
-            nota_filtrada_todos = normalizar_codigos_usuarios(nota_filtrada_todos)
+            nota_filtrada_todos = construir_nota_filtrada_por_indices(nota_data, indices_todos)
 
             json_todos_bytes = json.dumps(
                 nota_filtrada_todos, ensure_ascii=False, indent=2
@@ -1114,9 +1157,7 @@ def main():
             )
             if seleccion:
                 idxs_sel = [opciones[s] for s in seleccion]
-                nota_sel = {k: v for k, v in nota_data.items() if k != "usuarios"}
-                nota_sel["usuarios"] = [usuarios_actuales[i] for i in idxs_sel]
-                nota_sel = normalizar_codigos_usuarios(nota_sel)
+                nota_sel = construir_nota_filtrada_por_indices(nota_data, idxs_sel)
 
                 json_sel_bytes = json.dumps(
                     nota_sel, ensure_ascii=False, indent=2
@@ -1145,17 +1186,39 @@ def main():
 
     if attached_template_file is None:
         st.info(
-            "Para PNC001 (Nota Crédito RIPS), carga en el panel lateral el XML "
+            "Para usar un AttachedDocument RIPS como en tu ejemplo, carga en el panel lateral el XML "
             "AttachedDocument **RIPS** que ya genera tu sistema (el que tiene "
             "<RipsDocumento> dentro del <![CDATA[ ... ]]>). "
-            "Aquí solo se reemplaza ese RipsDocumento interno por el nuevo "
-            "con los valores corregidos."
+            "Aquí solo se reemplaza ese RipsDocumento interno por uno nuevo "
+            "con los usuarios y valores que haya en el JSON de la nota."
         )
     else:
+        modo_rips = st.radio(
+            "¿Qué usuarios incluir en el RipsDocumento del AttachedDocument?",
+            (
+                "Todos los usuarios de la nota actual",
+                "Solo usuarios con nota aplicada (según plantilla Excel)",
+            ),
+        )
+
+        if modo_rips == "Solo usuarios con nota aplicada (según plantilla Excel)":
+            updated_idx = st.session_state.get("usuarios_actualizados_desde_excel", [])
+            if updated_idx:
+                nota_para_xml = construir_nota_filtrada_por_indices(nota_data, updated_idx)
+            else:
+                st.warning(
+                    "No hay usuarios marcados como actualizados desde Excel. "
+                    "Se usará la nota tal como está cargada (todos sus usuarios)."
+                )
+                nota_para_xml = nota_data
+        else:
+            # Usa exactamente los usuarios que tenga el JSON de la nota actual
+            nota_para_xml = nota_data
+
         if st.button("Generar AttachedDocument con RipsDocumento incrustado"):
             try:
                 attached_bytes = attached_template_file.getvalue()
-                rips_bytes = nota_json_a_xml_bytes(nota_data)
+                rips_bytes = nota_json_a_xml_bytes(nota_para_xml)
                 attached_rips_bytes = incrustar_rips_en_attacheddocument_bytes(
                     attached_bytes, rips_bytes
                 )
@@ -1165,8 +1228,8 @@ def main():
                 )
             else:
                 st.success(
-                    "Se generó el XML AttachedDocument RIPS con el RipsDocumento "
-                    "actualizado dentro del primer <![CDATA[ ... ]]>."
+                    "Se generó el XML AttachedDocument RIPS manteniendo toda la estructura original "
+                    "y reemplazando solo el RipsDocumento interno (pacientes según el JSON actual / Excel)."
                 )
                 st.download_button(
                     "⬇️ Descargar AttachedDocument RIPS",
