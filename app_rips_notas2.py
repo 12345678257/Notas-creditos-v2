@@ -25,16 +25,17 @@ def main():
             "HABILITACIÓN": "https://servicios-habilitacion.afacturar.com",
             "PRODUCCIÓN": "https://servicios.afacturar.com"
         }[ambiente]
-        # token opcional (para enviar)
         token_sugerido = ""
         try:
             token_sugerido = st.secrets.get("AFACTURAR_TOKEN", "")
         except Exception:
             pass
         usar_secret = st.checkbox("Usar st.secrets['AFACTURAR_TOKEN']", value=bool(token_sugerido))
-        token = st.text_input("Bearer Token (solo valor, sin 'Bearer ')", 
-                              value=(token_sugerido if usar_secret else ""),
-                              type="password")
+        token = st.text_input(
+            "Bearer Token (solo valor, sin 'Bearer ')",
+            value=(token_sugerido if usar_secret else ""),
+            type="password"
+        )
 
     st.header("1) Encabezado")
     c1, c2, c3, c4 = st.columns(4)
@@ -46,8 +47,11 @@ def main():
     with c5: moneda = st.text_input("moneda", "COP")
     with c6: tipo_operacion = st.text_input("tipo_operacion", "35")
     with c7: tipo_nc = st.text_input("tipo_nota_credito (1..5)", "4")
-    nota_str = st.text_area("nota (string con comillas simples)", 
-                            "{'MOTIVO':'Ajuste de precio','OBS':'NC parcial'}", height=80)
+    nota_str = st.text_area(
+        "nota (string con comillas simples)",
+        "{'MOTIVO':'Ajuste de precio','OBS':'NC parcial'}",
+        height=80
+    )
 
     st.header("2) Documento afectado")
     doc_id = st.text_input("id_documento", "TT-000123")
@@ -80,6 +84,7 @@ def main():
     tipo_amb = "2" if ambiente != "PRODUCCIÓN" else "1"
 
     b1, b2, b3 = st.columns(3)
+
     if b1.button("🧩 Construir JSON"):
         try:
             encabezado = {
@@ -179,7 +184,7 @@ def main():
 
             payload = construir_payload_nota_credito(
                 documento_obligado=doc_obligado,
-                encabezado=endazado := encabezado,  # noqa: F821 (evita shadow accidental)
+                encabezado=encabezado,
                 servicio=servicio,
                 informacion_documento=informacion_documento,
                 detalle_factura=detalle,
@@ -203,9 +208,13 @@ def main():
             st.warning("Primero construye el JSON.")
         else:
             data = json.dumps(st.session_state["payload"], ensure_ascii=False, indent=2).encode("utf-8")
-            st.download_button("Descargar archivo", data=data,
-                               file_name=f"{id_nc}_nota_credito.json",
-                               mime="application/json", use_container_width=True)
+            st.download_button(
+                "Descargar archivo",
+                data=data,
+                file_name=f"{id_nc}_nota_credito.json",
+                mime="application/json",
+                use_container_width=True
+            )
 
     if b3.button("🚀 Enviar a Afacturar"):
         try:
